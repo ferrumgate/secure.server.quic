@@ -1,2 +1,3 @@
-# secure.server.wireguard
-wireguard tunnel opener, manager and closer with noise protocol framework
+# secure.server.quic
+
+quic tunnel opener, manager and closer
