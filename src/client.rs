@@ -13,7 +13,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use clap::Parser;
 
-use common::get_log_level;
+use common::{get_log_level, handle_as_stdin};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
@@ -183,12 +183,12 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
     let host = options.host.as_str();
 
     info!("connecting to {host} at {remote}");
-    let conn = endpoint
+    let connection = endpoint
         .connect(remote, host)?
         .await
         .map_err(|e| anyhow!("failed to connect: {}", e))?;
     info!("connected at {:?}", start.elapsed());
-    let (mut send, mut recv) = conn
+    let (mut send, mut recv) = connection
         .open_bi()
         .await
         .map_err(|e| anyhow!("failed to open stream: {}", e))?;
@@ -198,91 +198,8 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
         error!("rebinding to {addr}");
         endpoint.rebind(socket).expect("rebind failed");
     }
-
-    let input_task = tokio::spawn(async move {
-        let stdin = tokio::io::stdin();
-        let mut reader = BufReader::new(stdin);
-        loop {
-            debug!("waiting for input");
-            let mut line = String::new();
-            let result = reader.read_line(&mut line).await;
-            match result {
-                Err(e) => {
-                    error!("recv read failed {}", e);
-                    break;
-                }
-                Ok(0) => {
-                    warn!("stdin finished");
-                    break;
-                }
-                Ok(b) => {
-                    let bytes = line.as_bytes();
-                    debug!("data sended bytes {}", b);
-                    let _ = send
-                        .write_all(bytes)
-                        .await
-                        .map_err(|e| anyhow!("failed to send input:{}", e));
-                }
-            }
-        }
-    });
-
-    let output_task = tokio::spawn(async move {
-        let mut array: Vec<u8> = vec![0; 1024];
-
-        let mut stdout = tokio::io::stdout();
-        loop {
-            debug!("waiting for recv");
-            let resp = recv
-                .read(array.as_mut())
-                .await
-                .map_err(|e| anyhow!("failed to read response: {}", e));
-            if let Err(e) = resp {
-                error!("stream read error {}", e);
-                break;
-            }
-            let response = resp.unwrap();
-            match response {
-                Some(0) => {
-                    info!("stream closed");
-                    break;
-                }
-                Some(data) => {
-                    debug!("data received bytes {}", data);
-                    let res = stdout.write_all(&array[0..data]).await;
-                    if let Err(e) = res {
-                        error!("stdout write failed {}", e);
-                        break;
-                    }
-                }
-                None => {
-                    info!("stream finished");
-                    break;
-                }
-            }
-        }
-    });
-
-    let mut set = JoinSet::new();
-
-    set.spawn(input_task);
-    set.spawn(output_task);
-    let mut connection_closed = false;
-
-    while let Some(res) = set.join_next().await {
-        if !connection_closed {
-            //connection.close(0u32.into(), b"done");
-            debug!("connection closed");
-            connection_closed = true;
-        }
-    }
-    let _ = tokio::io::stdout().flush().await;
-    conn.close(0u32.into(), b"done");
-
-    // Give the server a fair chance to receive the close packet
-    endpoint.wait_idle().await;
-
-    Ok(())
+    let result = handle_as_stdin(send, recv, connection).await;
+    result
 }
 
 fn duration_secs(x: &Duration) -> f32 {
