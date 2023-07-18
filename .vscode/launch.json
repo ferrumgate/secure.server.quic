@@ -1,0 +1,85 @@
+{
+    // The following are sample configurations for common case scenarios of debugging
+    // Rust in Visual Studio Code
+    //
+    // For syntax, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    //
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch an application",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/client",
+            "args": [
+                "--host",
+                "test.ferrumgate.com"
+            ],
+            "cwd": "${workspaceRoot}",
+        },
+        {
+            "name": "Attach to a named executable",
+            "type": "lldb",
+            "request": "attach",
+            "program": "${workspaceRoot}/path-to/the-executable",
+        },
+        {
+            "name": "Debug ALL unit tests in library 'mylib'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=mylib"
+                ],
+                "filter": {
+                    "name": "mylib",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug specific unit test in library 'mylib'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=mylib"
+                ],
+                "filter": {
+                    "name": "mylib",
+                    "kind": "lib"
+                }
+            },
+            "args": [
+                "name_of_the_unit_test"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug example 'some-example'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=some-example",
+                    "--package=my-package"
+                ],
+                "filter": {
+                    "name": "some-example",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+    ]
+}

@@ -3,19 +3,32 @@
 //! Checkout the `README.md` for guidance.
 
 use std::{
-    ascii, fs, io,
-    net::SocketAddr,
-    path::{self, Path, PathBuf},
-    str,
+    fs,
+    io::Bytes,
+    net::{SocketAddr, ToSocketAddrs},
+    path::PathBuf,
     sync::Arc,
+    sync::Mutex,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use tracing::{error, info, info_span, Level};
-use tracing_futures::Instrument as _;
+use common::get_log_level;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
 mod common;
+
+struct FerrumServerConfig {
+    listen: SocketAddr,
+    ip: String,
+    stdinout: bool,
+    loglevel: String,
+    keylog: bool,
+    key: Option<PathBuf>,
+    cert: Option<PathBuf>,
+}
 
 #[derive(Parser, Debug)]
 #[clap(name = "server")]
@@ -23,8 +36,7 @@ struct Opt {
     /// file to log TLS keys to for debugging
     #[clap(long = "keylog")]
     keylog: bool,
-    /// directory to serve files from
-    root: PathBuf,
+
     /// TLS private key in PEM format
     #[clap(short = 'k', long = "key", requires = "cert")]
     key: Option<PathBuf>,
@@ -35,21 +47,68 @@ struct Opt {
     #[clap(long = "stateless-retry")]
     stateless_retry: bool,
     /// Address to listen on
-    #[clap(long = "listen", default_value = "[::1]:4433")]
-    listen: SocketAddr,
+    #[clap(long = "listen", default_value = "[::]:8443")]
+    listen: Option<String>,
+
+    #[clap(long = "port", default_value = "8443")]
+    port: u16,
+    #[clap(long = "stdinout")]
+    stdinout: bool,
+
+    #[clap(long = "loglevel", default_value = "info")]
+    loglevel: String,
+}
+
+#[allow(unused)]
+fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
+    let mut ip = "".to_owned();
+    match opt.listen {
+        None => {
+            ip.push_str("[::]");
+            let port_str = format!(":{}", opt.port);
+            ip.push_str(port_str.as_str());
+        }
+        Some(x) => ip = x.clone(),
+    }
+
+    let mut sockaddr = ip.to_socket_addrs()?;
+    let sockaddr_v = sockaddr.next();
+    if sockaddr_v.is_none() {
+        return Err(anyhow!("could not parse listen"));
+    }
+    let sockaddrs = sockaddr_v.unwrap();
+
+    let config: FerrumServerConfig = FerrumServerConfig {
+        listen: sockaddrs,
+        ip: ip.clone(),
+        stdinout: opt.stdinout,
+        loglevel: opt.loglevel,
+        cert: opt.cert,
+        key: opt.key,
+        keylog: opt.keylog,
+    };
+    Ok(config)
 }
 
 fn main() {
+    let copt = Opt::parse();
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(Level::TRACE)
+            .with_max_level(get_log_level(&copt.loglevel))
             .finish(),
     )
     .unwrap();
-    let opt = Opt::parse();
+
+    let opt = parse_config(copt);
+    if let Err(e) = opt {
+        error!("ERROR: parse failed: {}", e);
+        ::std::process::exit(1);
+    }
+
     let code = {
-        if let Err(e) = run(opt) {
-            eprintln!("ERROR: {e}");
+        if let Err(e) = run(opt.unwrap()) {
+            error!("ERROR: {e}");
+
             1
         } else {
             0
@@ -59,7 +118,7 @@ fn main() {
 }
 
 #[tokio::main]
-async fn run(options: Opt) -> Result<()> {
+async fn run(options: FerrumServerConfig) -> Result<()> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
         let key = if key_path.extension().map_or(false, |x| x == "der") {
@@ -75,7 +134,7 @@ async fn run(options: Opt) -> Result<()> {
                     match rsa.into_iter().next() {
                         Some(x) => rustls::PrivateKey(x),
                         None => {
-                            anyhow::bail!("no private keys found");
+                            return Err(anyhow!("no private keys found"));
                         }
                     }
                 }
@@ -94,26 +153,18 @@ async fn run(options: Opt) -> Result<()> {
 
         (cert_chain, key)
     } else {
-        let dirs = directories_next::ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
+        let dirs = directories_next::ProjectDirs::from("org", "ferrum", "cert").unwrap();
         let path = dirs.data_local_dir();
         let cert_path = path.join("cert.der");
         let key_path = path.join("key.der");
-        let (cert, key) = match fs::read(&cert_path).and_then(|x| Ok((x, fs::read(&key_path)?))) {
-            Ok(x) => x,
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                info!("generating self-signed certificate");
-                let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-                let key = cert.serialize_private_key_der();
-                let cert = cert.serialize_der().unwrap();
-                fs::create_dir_all(path).context("failed to create certificate directory")?;
-                fs::write(&cert_path, &cert).context("failed to write certificate")?;
-                fs::write(&key_path, &key).context("failed to write private key")?;
-                (cert, key)
-            }
-            Err(e) => {
-                bail!("failed to read certificate: {}", e);
-            }
-        };
+
+        info!("generating self-signed certificate");
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key = cert.serialize_private_key_der();
+        let cert = cert.serialize_der().unwrap();
+        fs::create_dir_all(path).context("failed to create certificate directory")?;
+        fs::write(&cert_path, &cert).context("failed to write certificate")?;
+        fs::write(&key_path, &key).context("failed to write private key")?;
 
         let key = rustls::PrivateKey(key);
         let cert = rustls::Certificate(cert);
@@ -132,21 +183,23 @@ async fn run(options: Opt) -> Result<()> {
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
-    if options.stateless_retry {
-        server_config.use_retry(true);
-    }
+    transport_config.max_concurrent_bidi_streams(1_u8.into());
 
-    let root = Arc::<Path>::from(options.root.clone());
+    /*  if options.stateless_retry {
+           server_config.use_retry(true);
+       }
+    */
+    /*  let root = Arc::<Path>::from(options.root.clone());
     if !root.exists() {
         bail!("root path does not exist");
-    }
+    } */
 
     let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
     eprintln!("listening on {}", endpoint.local_addr()?);
 
     while let Some(conn) = endpoint.accept().await {
         info!("connection incoming");
-        let fut = handle_connection(root.clone(), conn);
+        let fut = handle_connection(conn);
         tokio::spawn(async move {
             if let Err(e) = fut.await {
                 error!("connection failed: {reason}", reason = e.to_string())
@@ -157,110 +210,118 @@ async fn run(options: Opt) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(root: Arc<Path>, conn: quinn::Connecting) -> Result<()> {
+async fn handle_connection(conn: quinn::Connecting) -> Result<()> {
     let connection = conn.await?;
-    let span = info_span!(
-        "connection",
-        remote = %connection.remote_address(),
-        protocol = %connection
+    info!(
+        "connection remote: {} {}",
+        connection.remote_address(),
+        connection
             .handshake_data()
             .unwrap()
-            .downcast::<quinn::crypto::rustls::HandshakeData>().unwrap()
+            .downcast::<quinn::crypto::rustls::HandshakeData>()
+            .unwrap()
             .protocol
-            .map_or_else(|| "<none>".into(), |x| String::from_utf8_lossy(&x).into_owned())
+            .map_or_else(
+                || "<none>".into(),
+                |x| String::from_utf8_lossy(&x).into_owned()
+            )
     );
-    async {
-        info!("established");
 
-        // Each stream initiated by the client constitutes a new request.
+    info!("established");
+
+    // Each stream initiated by the client constitutes a new request.
+
+    let (mut send, mut recv) = connection
+        .accept_bi()
+        .await
+        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
+
+    let stdin_shared = Arc::new(tokio::io::stdin());
+    let stdin_a = stdin_shared.clone();
+    let input_task = tokio::spawn(async move {
+        let stdin = stdin_a;
+        let mut reader = BufReader::new(stdin);
         loop {
-            let stream = connection.accept_bi().await;
-            let stream = match stream {
-                Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                    info!("connection closed");
-                    return Ok(());
-                }
+            debug!("waiting for input");
+            let mut line = String::new();
+            let result = reader.read_line(&mut line).await;
+            match result {
                 Err(e) => {
-                    return Err(e);
+                    error!("recv read failed {}", e);
+                    break;
                 }
-                Ok(s) => s,
-            };
-            let fut = handle_request(root.clone(), stream);
-            tokio::spawn(
-                async move {
-                    if let Err(e) = fut.await {
-                        error!("failed: {reason}", reason = e.to_string());
+                Ok(0) => {
+                    warn!("stdin finished");
+                    break;
+                }
+                Ok(b) => {
+                    debug!("data sended bytes {}", b);
+                    let _ = send
+                        .write_all(line.as_bytes())
+                        .await
+                        .map_err(|e| anyhow!("failed to send input:{}", e));
+                }
+            }
+        }
+    });
+
+    let output_task = tokio::spawn(async move {
+        let mut array: Vec<u8> = vec![0; 1024];
+
+        let mut stdout = tokio::io::stdout();
+        loop {
+            debug!("waiting for recv");
+            let resp = recv
+                .read(array.as_mut())
+                .await
+                .map_err(|e| anyhow!("failed to read response: {}", e));
+            if let Err(e) = resp {
+                error!("stream read error {}", e);
+                break;
+            }
+
+            debug!("received data");
+            let response = resp.unwrap();
+            match response {
+                Some(0) => {
+                    info!("stream closed");
+                    break;
+                }
+                Some(data) => {
+                    debug!("data received bytes {}", data);
+                    let res = stdout.write_all(&array[0..data]).await;
+                    if let Err(e) = res {
+                        error!("stdout write failed {}", e);
+                        break;
                     }
                 }
-                .instrument(info_span!("request")),
-            );
+                None => {
+                    info!("stream finished");
+                    break;
+                }
+            }
         }
-    }
-    .instrument(span)
-    .await?;
-    Ok(())
-}
-
-async fn handle_request(
-    root: Arc<Path>,
-    (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
-) -> Result<()> {
-    let req = recv
-        .read_to_end(64 * 1024)
-        .await
-        .map_err(|e| anyhow!("failed reading request: {}", e))?;
-    let mut escaped = String::new();
-    for &x in &req[..] {
-        let part = ascii::escape_default(x).collect::<Vec<_>>();
-        escaped.push_str(str::from_utf8(&part).unwrap());
-    }
-    info!(content = %escaped);
-    // Execute the request
-    let resp = process_get(&root, &req).unwrap_or_else(|e| {
-        error!("failed: {}", e);
-        format!("failed to process request: {e}\n").into_bytes()
     });
-    // Write the response
-    send.write_all(&resp)
-        .await
-        .map_err(|e| anyhow!("failed to send response: {}", e))?;
-    // Gracefully terminate the stream
-    send.finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-    info!("complete");
-    Ok(())
-}
 
-fn process_get(root: &Path, x: &[u8]) -> Result<Vec<u8>> {
-    if x.len() < 4 || &x[0..4] != b"GET " {
-        bail!("missing GET");
-    }
-    if x[4..].len() < 2 || &x[x.len() - 2..] != b"\r\n" {
-        bail!("missing \\r\\n");
-    }
-    let x = &x[4..x.len() - 2];
-    let end = x.iter().position(|&c| c == b' ').unwrap_or(x.len());
-    let path = str::from_utf8(&x[..end]).context("path is malformed UTF-8")?;
-    let path = Path::new(&path);
-    let mut real_path = PathBuf::from(root);
-    let mut components = path.components();
-    match components.next() {
-        Some(path::Component::RootDir) => {}
-        _ => {
-            bail!("path must be absolute");
+    let mut set = JoinSet::new();
+
+    set.spawn(input_task);
+    set.spawn(output_task);
+    let mut connection_closed = false;
+
+    while let Some(res) = set.join_next().await {
+        if !connection_closed {
+            //connection.close(0u32.into(), b"done");
+            //debug!("connection closed");
+            connection_closed = true;
         }
     }
-    for c in components {
-        match c {
-            path::Component::Normal(x) => {
-                real_path.push(x);
-            }
-            x => {
-                bail!("illegal component in path: {:?}", x);
-            }
-        }
-    }
-    let data = fs::read(&real_path).context("failed reading file")?;
-    Ok(data)
+    /*  let _ = tokio::join!(output_task);
+    let _ = tokio::join!(input_task); */
+
+    let _ = tokio::io::stdout().flush().await;
+    connection.close(0u32.into(), b"done");
+    //debug!("connection closed");
+    debug!("closing evertthing");
+    Ok(())
 }

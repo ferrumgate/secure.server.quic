@@ -1,8 +1,11 @@
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use std::{error::Error, net::SocketAddr, sync::Arc};
+use tracing::Level;
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+#[allow(unused)]
+pub const ALPN_QUIC: &[&[u8]] = &[b"hq-29"];
 /// Constructs a QUIC endpoint configured for use a client only.
 ///
 /// ## Args
@@ -61,4 +64,24 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     transport_config.max_concurrent_uni_streams(0_u8.into());
 
     Ok((server_config, cert_der))
+}
+
+pub fn get_log_level(level: &String) -> Level {
+    if level.to_ascii_lowercase() == "trace" {
+        return Level::TRACE;
+    }
+    if level.to_ascii_lowercase() == "debug" {
+        return Level::DEBUG;
+    }
+    if level.to_ascii_lowercase() == "info" {
+        return Level::INFO;
+    }
+    if level.to_ascii_lowercase() == "warn" {
+        return Level::WARN;
+    }
+    if level.to_ascii_lowercase() == "error" {
+        return Level::ERROR;
+    }
+
+    return Level::INFO;
 }

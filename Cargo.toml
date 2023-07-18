@@ -21,10 +21,15 @@ clap = {version="4.3.11",features = ["derive"]}
 directories-next = "2.0.0"
 quinn = "0.10.1"
 rcgen = "0.11.1"
-rustls = "0.21.5"
+rustls = {version="0.21.5",features=["dangerous_configuration"]}
 rustls-pemfile = "1.0.3"
 tokio ={version= "1.29.1", features = ["full"]}
 tracing = "0.1.37"
 tracing-subscriber ={version= "0.3.17"}
 tracing-futures= {version = "0.2.5"}
 url = "2.4.0"
+webpki-roots = "0.24.0"
+tokio-util = "0.7.8"
+tokio-stream = "0.1.14"
+tokio-macros = "2.1.0"
+tokio-test = "0.4.2"
