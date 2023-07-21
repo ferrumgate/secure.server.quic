@@ -94,12 +94,16 @@ pub async fn handle_as_stdin(
     mut recv: RecvStream,
     connection: Connection,
 ) -> Result<()> {
+    //let stdin_shared = Arc::new(tokio::io::stdin());
+    //let stdin = stdin_shared.clone();
+
     let input_task = tokio::spawn(async move {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::with_capacity(2048, stdin);
 
         loop {
             debug!("waiting for input");
+
             let mut line = String::new();
             let result = reader.read_line(&mut line).await;
             match result {
@@ -113,10 +117,13 @@ pub async fn handle_as_stdin(
                 }
                 Ok(b) => {
                     debug!("data sended bytes {}", b);
-                    let _ = send
+                    let res = send
                         .write_all(line.as_bytes())
                         .await
                         .map_err(|e| anyhow!("failed to send input:{}", e));
+                    if res.is_err() {
+                        break;
+                    }
                 }
             }
         }
