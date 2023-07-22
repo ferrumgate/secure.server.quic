@@ -33,3 +33,4 @@ tokio-util = "0.7.8"
 tokio-stream = "0.1.14"
 tokio-macros = "2.1.0"
 tokio-test = "0.4.2"
+tun = { version = "0.5.5", features = ["async"] }
