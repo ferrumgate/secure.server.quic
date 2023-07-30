@@ -17,6 +17,7 @@ use common::{get_log_level, handle_as_stdin};
 use quinn::{Connecting, Connection, RecvStream, SendStream};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 mod common;
@@ -236,6 +237,7 @@ async fn handle_connection(conn: quinn::Connecting) -> Result<()> {
         .accept_bi()
         .await
         .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-    let result = handle_as_stdin(send, recv, connection).await;
+    let cancel_token = CancellationToken::new();
+    let result = handle_as_stdin(send, recv, connection, cancel_token.clone()).await;
     result
 }

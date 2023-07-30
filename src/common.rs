@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::task::JoinSet;
+use tokio::select;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 
 #[allow(unused)]
@@ -93,36 +94,40 @@ pub async fn handle_as_stdin(
     mut send: SendStream,
     mut recv: RecvStream,
     connection: Connection,
+    cancel_token: CancellationToken,
 ) -> Result<()> {
-    //let stdin_shared = Arc::new(tokio::io::stdin());
-    //let stdin = stdin_shared.clone();
-
+    let stdin = tokio::io::stdin();
+    let ctoken1 = cancel_token.clone();
     let input_task = tokio::spawn(async move {
-        let stdin = tokio::io::stdin();
         let mut reader = BufReader::with_capacity(2048, stdin);
-
+        let mut line = String::new();
         loop {
             debug!("waiting for input");
-
-            let mut line = String::new();
-            let result = reader.read_line(&mut line).await;
-            match result {
-                Err(e) => {
-                    error!("recv read failed {}", e);
+            select! {
+                _=ctoken1.cancelled()=>{
+                    warn!("cancelled");
                     break;
-                }
-                Ok(0) => {
-                    warn!("stdin finished");
-                    break;
-                }
-                Ok(b) => {
-                    debug!("data sended bytes {}", b);
-                    let res = send
-                        .write_all(line.as_bytes())
-                        .await
-                        .map_err(|e| anyhow!("failed to send input:{}", e));
-                    if res.is_err() {
-                        break;
+                },
+                result=reader.read_line(&mut line)=>{
+                    match result {
+                        Err(e) => {
+                            error!("recv read failed {}", e);
+                            break;
+                        }
+                        Ok(0) => {
+                            warn!("stdin finished");
+                            break;
+                        }
+                        Ok(b) => {
+                            debug!("data sended bytes {}", b);
+                            let res = send
+                                .write_all(line.as_bytes())
+                                .await
+                                .map_err(|e| anyhow!("failed to send input:{}", e));
+                            if res.is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -131,7 +136,6 @@ pub async fn handle_as_stdin(
 
     let output_task = tokio::spawn(async move {
         let mut array: Vec<u8> = vec![0; 1024];
-
         let mut stdout = tokio::io::stdout();
         loop {
             debug!("waiting for recv");
@@ -167,21 +171,8 @@ pub async fn handle_as_stdin(
         }
     });
 
-    let mut set = JoinSet::new();
-
-    set.spawn(input_task);
-    set.spawn(output_task);
-    let mut connection_closed = false;
-
-    while let Some(res) = set.join_next().await {
-        if !connection_closed {
-            //connection.close(0u32.into(), b"done");
-            //debug!("connection closed");
-            connection_closed = true;
-        }
-    }
-    /*  let _ = tokio::join!(output_task);
-    let _ = tokio::join!(input_task); */
+    let _ = tokio::join!(output_task);
+    let _ = tokio::join!(input_task);
 
     let _ = tokio::io::stdout().flush().await;
     connection.close(0u32.into(), b"done");

@@ -16,7 +16,11 @@ use clap::Parser;
 use common::{get_log_level, handle_as_stdin};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::runtime::Builder;
 use tokio::task::JoinSet;
+use tokio::{select, signal};
+
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
 
@@ -154,6 +158,10 @@ fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
 
 #[tokio::main]
 async fn run(options: FerrumClientConfig) -> Result<()> {
+    let _rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     let remote = options.ip;
     info!("connect to {}", remote);
     let roots = create_root_certs(&options)?;
@@ -188,7 +196,7 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
         .await
         .map_err(|e| anyhow!("failed to connect: {}", e))?;
     info!("connected at {:?}", start.elapsed());
-    let (mut send, mut recv) = connection
+    let (send, recv) = connection
         .open_bi()
         .await
         .map_err(|e| anyhow!("failed to open stream: {}", e))?;
@@ -198,8 +206,26 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
         error!("rebinding to {addr}");
         endpoint.rebind(socket).expect("rebind failed");
     }
-    let result = handle_as_stdin(send, recv, connection).await;
-    result
+
+    let token = CancellationToken::new();
+    select! {
+        result=handle_as_stdin(send, recv, connection, token.clone())=>{
+            result
+        },
+        signal=signal::ctrl_c()=>{
+            match signal {
+            Ok(()) => {
+                token.cancel();
+            },
+            Err(err) => {
+                error!("Unable to listen for shutdown signal: {}", err);
+                // we also shut down in case of error
+            },
+            }
+            Ok(())
+
+        }
+    }
 }
 
 fn duration_secs(x: &Duration) -> f32 {
