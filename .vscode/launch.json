@@ -7,7 +7,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch an application",
+            "name": "Launch client",
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceRoot}/target/debug/client",
@@ -18,10 +18,12 @@
             "cwd": "${workspaceRoot}",
         },
         {
-            "name": "Attach to a named executable",
+            "name": "Launch server",
             "type": "lldb",
-            "request": "attach",
-            "program": "${workspaceRoot}/path-to/the-executable",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/server",
+            "args": [],
+            "cwd": "${workspaceRoot}",
         },
         {
             "name": "Debug ALL unit tests in library 'mylib'",

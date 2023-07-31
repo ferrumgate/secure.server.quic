@@ -4,19 +4,18 @@
 
 use std::{
     fs,
-    io::Bytes,
     net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
     sync::Arc,
-    sync::Mutex,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use common::{get_log_level, handle_as_stdin};
-use quinn::{Connecting, Connection, RecvStream, SendStream};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::task::JoinSet;
+use quinn::{Connection, IdleTimeout, RecvStream, SendStream, VarInt};
+use rcgen::DistinguishedName;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -93,6 +92,10 @@ fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
 }
 
 fn main() {
+    let _rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let copt = Opt::parse();
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
@@ -107,19 +110,19 @@ fn main() {
         ::std::process::exit(1);
     }
 
-    let code = {
-        if let Err(e) = run(opt.unwrap()) {
-            error!("ERROR: {e}");
-
-            1
-        } else {
-            0
-        }
-    };
-    ::std::process::exit(code);
+    _rt.block_on(async {
+        let code = {
+            if let Err(e) = run(opt.unwrap()).await {
+                error!("ERROR: {e}");
+                1
+            } else {
+                0
+            }
+        };
+        ::std::process::exit(code);
+    });
 }
 
-#[tokio::main]
 async fn run(options: FerrumServerConfig) -> Result<()> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
@@ -161,7 +164,14 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
         let key_path = path.join("key.der");
 
         info!("generating self-signed certificate");
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        // let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.alg = &rcgen::PKCS_RSA_SHA256;
+        
+        
+        let cert=rcgen::generate_simple_self_signed(subject_alt_names)
+
+        let _ = fs::write("/tmp/test.der", cert.serialize_der().unwrap());
         let key = cert.serialize_private_key_der();
         let cert = cert.serialize_der().unwrap();
         fs::create_dir_all(path).context("failed to create certificate directory")?;
@@ -186,6 +196,9 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
     transport_config.max_concurrent_bidi_streams(1_u8.into());
+    transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
+
+    transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(15000_u32))));
 
     /*  if options.stateless_retry {
            server_config.use_retry(true);
@@ -200,11 +213,24 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     eprintln!("listening on {}", endpoint.local_addr()?);
 
     while let Some(conn) = endpoint.accept().await {
-        info!("connection incoming");
-        let fut = handle_connection(conn);
+        debug!("connection incoming");
+        let fut = timeout(Duration::from_secs(3), handle_connection(conn));
         tokio::spawn(async move {
-            if let Err(e) = fut.await {
-                error!("connection failed: {reason}", reason = e.to_string())
+            let res = fut.await;
+            match res {
+                Err(err) => {
+                    error!("timeout occured {}", err);
+                }
+                Ok(res2) => match res2 {
+                    Err(err) => {
+                        error!("connection failed: {reason}", reason = err.to_string())
+                    }
+                    Ok((send, recv, conn)) => {
+                        let cancel_token = CancellationToken::new();
+                        let _ = handle_as_stdin(send, recv, cancel_token.clone()).await;
+                        conn.close(0u32.into(), b"done");
+                    }
+                },
             }
         });
     }
@@ -212,7 +238,9 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(conn: quinn::Connecting) -> Result<()> {
+async fn handle_connection(
+    conn: quinn::Connecting,
+) -> Result<(SendStream, RecvStream, Connection)> {
     let connection = conn.await?;
     info!(
         "connection remote: {} {}",
@@ -229,15 +257,11 @@ async fn handle_connection(conn: quinn::Connecting) -> Result<()> {
             )
     );
 
-    info!("established");
+    info!("established {}", connection.remote_address());
 
     // Each stream initiated by the client constitutes a new request.
 
-    let (mut send, mut recv) = connection
-        .accept_bi()
-        .await
-        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-    let cancel_token = CancellationToken::new();
-    let result = handle_as_stdin(send, recv, connection, cancel_token.clone()).await;
-    result
+    let (send, recv) = connection.accept_bi().await?;
+    info!("stream opened {}", connection.remote_address());
+    Ok((send, recv, connection))
 }

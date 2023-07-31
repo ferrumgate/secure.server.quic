@@ -14,19 +14,22 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 
 use common::{get_log_level, handle_as_stdin};
+use quinn::{IdleTimeout, RecvStream, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::runtime::Builder;
 use tokio::task::JoinSet;
+use tokio::time::timeout;
 use tokio::{select, signal};
 
+use tokio_test::block_on;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 mod common;
 
-struct FerrumClientConfig {
+pub struct FerrumClientConfig {
     host: String,
     host_port: String,
     ip: SocketAddr,
@@ -37,7 +40,7 @@ struct FerrumClientConfig {
     stdinout: bool,
     loglevel: String,
 }
-/// HTTP/0.9 over QUIC client
+
 #[derive(Parser, Debug)]
 #[clap(name = "client")]
 struct ClientConfigOpt {
@@ -89,6 +92,11 @@ fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
 }
 
 fn main() {
+    let _rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let copt = ClientConfigOpt::parse();
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
@@ -103,17 +111,18 @@ fn main() {
         error!("ERROR: parse failed: {}", e);
         ::std::process::exit(1);
     }
+    _rt.block_on(async {
+        let code = {
+            if let Err(e) = run(opt.unwrap()).await {
+                error!("ERROR: {e}");
+                1
+            } else {
+                0
+            }
+        };
 
-    let code = {
-        if let Err(e) = run(opt.unwrap()) {
-            error!("ERROR: {e}");
-
-            1
-        } else {
-            0
-        }
-    };
-    ::std::process::exit(code);
+        ::std::process::exit(code);
+    });
 }
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
@@ -142,7 +151,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
 fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
 
-    roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+    roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -156,76 +165,126 @@ fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
     Ok(roots)
 }
 
-#[tokio::main]
-async fn run(options: FerrumClientConfig) -> Result<()> {
-    let _rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+pub struct FerrumClient {
+    options: FerrumClientConfig,
+    crypto: rustls::client::ClientConfig,
+    connection: Option<quinn::Connection>,
+}
+impl FerrumClient {
+    pub fn new(options: FerrumClientConfig, certs: RootCertStore) -> Self {
+        let mut client = FerrumClient {
+            options,
+            crypto: rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(certs)
+                .with_no_client_auth(),
+            connection: None,
+        };
 
+        if client.options.insecure {
+            client
+                .crypto
+                .dangerous()
+                .set_certificate_verifier(SkipServerVerification::new());
+        }
+
+        client.crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+        if client.options.keylog {
+            client.crypto.key_log = Arc::new(rustls::KeyLogFile::new());
+        }
+        client
+    }
+
+    pub async fn connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+        let crypto = self.crypto.clone();
+        let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
+        let mut transport_config = TransportConfig::default();
+
+        transport_config.max_concurrent_uni_streams(0_u8.into());
+        transport_config.max_concurrent_bidi_streams(1_u8.into());
+        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(15000_u32))));
+        transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+
+        client_config.transport_config(Arc::new(transport_config));
+
+        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap())?;
+        endpoint.set_default_client_config(client_config);
+
+        let start = Instant::now();
+        let host = self.options.host.as_str();
+        let remote = self.options.ip.clone();
+
+        info!("connecting to {host} at {remote}");
+        let connection = endpoint
+            .connect(remote, host)?
+            .await
+            .map_err(|e| anyhow!("failed to connect: {}", e))?;
+
+        info!("connected at {:?}", start.elapsed());
+        let (mut send, recv) = connection.open_bi().await?;
+        send.write(b"hello").await?;
+        if self.options.rebind {
+            let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
+            let addr = socket.local_addr().unwrap();
+            error!("rebinding to {addr}");
+            endpoint.rebind(socket).expect("rebind failed");
+        }
+        self.connection = Some(connection);
+        info!("stream opened");
+        Ok((send, recv))
+    }
+    pub fn close(&mut self) {
+        if self.connection.is_some() {
+            self.connection
+                .as_mut()
+                .unwrap()
+                .close(0u32.into(), b"done");
+        }
+    }
+}
+
+async fn run(options: FerrumClientConfig) -> Result<()> {
     let remote = options.ip;
     info!("connect to {}", remote);
     let roots = create_root_certs(&options)?;
 
-    let mut client_crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-
-    if options.insecure {
-        client_crypto
-            .dangerous()
-            .set_certificate_verifier(SkipServerVerification::new());
-    }
-
-    client_crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    if options.keylog {
-        client_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
-    }
-
-    let client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
-    let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap())?;
-    endpoint.set_default_client_config(client_config);
-
-    let start = Instant::now();
-    let rebind = options.rebind;
-    let host = options.host.as_str();
-
-    info!("connecting to {host} at {remote}");
-    let connection = endpoint
-        .connect(remote, host)?
+    let mut client: FerrumClient = FerrumClient::new(options, roots);
+    let result = timeout(Duration::from_secs(5), client.connect())
         .await
-        .map_err(|e| anyhow!("failed to connect: {}", e))?;
-    info!("connected at {:?}", start.elapsed());
-    let (send, recv) = connection
-        .open_bi()
-        .await
-        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-    if rebind {
-        let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
-        let addr = socket.local_addr().unwrap();
-        error!("rebinding to {addr}");
-        endpoint.rebind(socket).expect("rebind failed");
+        .map_err(|err| {
+            error!("connect timeout");
+            err
+        })?;
+    if let Err(err) = result {
+        return Err(err);
     }
 
+    let (send, recv) = result.unwrap();
     let token = CancellationToken::new();
-    select! {
-        result=handle_as_stdin(send, recv, connection, token.clone())=>{
-            result
+
+    let result = select! {
+        result=handle_as_stdin(send, recv, token.clone()) =>{
+             result
         },
         signal=signal::ctrl_c()=>{
             match signal {
             Ok(()) => {
+                info!("canceling");
                 token.cancel();
+
             },
             Err(err) => {
                 error!("Unable to listen for shutdown signal: {}", err);
                 // we also shut down in case of error
-            },
+            }
             }
             Ok(())
 
         }
-    }
+    };
+
+    client.close();
+    result
 }
 
 fn duration_secs(x: &Duration) -> f32 {

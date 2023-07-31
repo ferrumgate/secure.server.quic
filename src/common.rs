@@ -8,8 +8,7 @@ use tracing::{debug, error, info, warn, Level};
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
-#[allow(unused)]
-pub const ALPN_QUIC: &[&[u8]] = &[b"hq-29"];
+
 /// Constructs a QUIC endpoint configured for use a client only.
 ///
 /// ## Args
@@ -93,14 +92,18 @@ pub fn get_log_level(level: &String) -> Level {
 pub async fn handle_as_stdin(
     mut send: SendStream,
     mut recv: RecvStream,
-    connection: Connection,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let ctoken1 = cancel_token.clone();
-    let input_task = tokio::spawn(async move {
+    let task = tokio::spawn(async move {
+        //input read
         let mut reader = BufReader::with_capacity(2048, stdin);
         let mut line = String::new();
+        //output
+        let mut array: Vec<u8> = vec![0; 1024];
+        let mut stdout = tokio::io::stdout();
+
         loop {
             debug!("waiting for input");
             select! {
@@ -129,54 +132,51 @@ pub async fn handle_as_stdin(
                             }
                         }
                     }
-                }
-            }
-        }
-    });
+                },
+                resp = recv
+                        .read(array.as_mut())=>{
 
-    let output_task = tokio::spawn(async move {
-        let mut array: Vec<u8> = vec![0; 1024];
-        let mut stdout = tokio::io::stdout();
-        loop {
-            debug!("waiting for recv");
-            let resp = recv
-                .read(array.as_mut())
-                .await
-                .map_err(|e| anyhow!("failed to read response: {}", e));
-            if let Err(e) = resp {
-                error!("stream read error {}", e);
-                break;
-            }
-
-            debug!("received data");
-            let response = resp.unwrap();
-            match response {
-                Some(0) => {
-                    info!("stream closed");
-                    break;
-                }
-                Some(data) => {
-                    debug!("data received bytes {}", data);
-                    let res = stdout.write_all(&array[0..data]).await;
-                    if let Err(e) = res {
-                        error!("stdout write failed {}", e);
+                    if let Err(e) = resp {
+                        error!("stream read error {}", e);
                         break;
                     }
-                }
-                None => {
-                    info!("stream finished");
-                    break;
+
+                    debug!("received data");
+                    let response = resp.unwrap();
+                    match response {
+                        Some(0) => {
+                            info!("stream closed");
+                            break;
+                        }
+                        Some(data) => {
+                            debug!("data received bytes {}", data);
+                            let res = stdout.write_all(&array[0..data]).await;
+                            if let Err(e) = res {
+                                error!("stdout write failed {}", e);
+                                break;
+                            }
+                        }
+                        None => {
+                            info!("stream finished");
+                            break;
+                        }
+                    }
                 }
             }
         }
     });
 
-    let _ = tokio::join!(output_task);
-    let _ = tokio::join!(input_task);
+    let _ = tokio::join!(task);
 
     let _ = tokio::io::stdout().flush().await;
-    connection.close(0u32.into(), b"done");
+
     //debug!("connection closed");
-    debug!("closing evertthing");
+    debug!("closing everything");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn test_handle_input() {}
 }
