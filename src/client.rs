@@ -1,5 +1,7 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
+mod common;
+
 use std::{
     fs,
     io::{self, Write},
@@ -26,8 +28,6 @@ use tokio_test::block_on;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
-
-mod common;
 
 pub struct FerrumClientConfig {
     host: String,
@@ -297,7 +297,9 @@ mod tests {
 
     use clap::Parser;
 
-    use crate::{create_root_certs, parse_config, ClientConfigOpt, FerrumClientConfig};
+    use crate::{
+        create_root_certs, parse_config, ClientConfigOpt, FerrumClient, FerrumClientConfig,
+    };
 
     #[test]
     fn test_parse_config() {

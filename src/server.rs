@@ -2,6 +2,8 @@
 //!
 //! Checkout the `README.md` for guidance.
 
+mod common;
+
 use std::{
     fs,
     net::{SocketAddr, ToSocketAddrs},
@@ -13,15 +15,14 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use common::{get_log_level, handle_as_stdin};
-use quinn::{Connection, IdleTimeout, RecvStream, SendStream, VarInt};
+use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, ServerConfig, VarInt};
 use rcgen::DistinguishedName;
+use rustls::{Certificate, PrivateKey};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-mod common;
-
-struct FerrumServerConfig {
+pub struct FerrumServerConfig {
     listen: SocketAddr,
     ip: String,
     stdinout: bool,
@@ -29,6 +30,8 @@ struct FerrumServerConfig {
     keylog: bool,
     key: Option<PathBuf>,
     cert: Option<PathBuf>,
+    connect_timeout: u64,
+    idle_timeout: u32,
 }
 
 #[derive(Parser, Debug)]
@@ -87,6 +90,8 @@ fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
         cert: opt.cert,
         key: opt.key,
         keylog: opt.keylog,
+        connect_timeout: 3000,
+        idle_timeout: 15000,
     };
     Ok(config)
 }
@@ -123,7 +128,12 @@ fn main() {
     });
 }
 
-async fn run(options: FerrumServerConfig) -> Result<()> {
+pub struct FerrumServerCertChain {
+    certs: Vec<Certificate>,
+    key: PrivateKey,
+}
+
+fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
         let key = if key_path.extension().map_or(false, |x| x == "der") {
@@ -164,14 +174,8 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
         let key_path = path.join("key.der");
 
         info!("generating self-signed certificate");
-        // let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let mut params = rcgen::CertificateParams::default();
-        params.alg = &rcgen::PKCS_RSA_SHA256;
-        
-        
-        let cert=rcgen::generate_simple_self_signed(subject_alt_names)
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
 
-        let _ = fs::write("/tmp/test.der", cert.serialize_der().unwrap());
         let key = cert.serialize_private_key_der();
         let cert = cert.serialize_der().unwrap();
         fs::create_dir_all(path).context("failed to create certificate directory")?;
@@ -182,58 +186,81 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
         let cert = rustls::Certificate(cert);
         (vec![cert], key)
     };
+    Ok(FerrumServerCertChain { certs, key })
+}
+pub struct FerrumServer {
+    options: FerrumServerConfig,
+    endpoint: Endpoint,
+}
 
-    let mut server_crypto = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    server_crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    if options.keylog {
-        server_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
+impl FerrumServer {
+    pub fn new(options: FerrumServerConfig, certs: FerrumServerCertChain) -> Result<Self> {
+        let mut server_crypto = rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(certs.certs, certs.key)?;
+        server_crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+        if options.keylog {
+            server_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
+        }
+
+        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+        let transport_config_option = Arc::get_mut(&mut server_config.transport);
+        if transport_config_option.is_none() {
+            return Err(anyhow!("could not get config"));
+        }
+        let transport_config = transport_config_option.unwrap();
+        transport_config.max_concurrent_uni_streams(0_u8.into());
+        transport_config.max_concurrent_bidi_streams(1_u8.into());
+        transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
+
+        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
+            options.idle_timeout,
+        ))));
+
+        let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
+        Ok(FerrumServer {
+            options: options,
+            endpoint: endpoint,
+        })
     }
-
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport_config.max_concurrent_uni_streams(0_u8.into());
-    transport_config.max_concurrent_bidi_streams(1_u8.into());
-    transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
-
-    transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(15000_u32))));
-
-    /*  if options.stateless_retry {
-           server_config.use_retry(true);
-       }
-    */
-    /*  let root = Arc::<Path>::from(options.root.clone());
-    if !root.exists() {
-        bail!("root path does not exist");
-    } */
-
-    let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
-    eprintln!("listening on {}", endpoint.local_addr()?);
-
-    while let Some(conn) = endpoint.accept().await {
-        debug!("connection incoming");
-        let fut = timeout(Duration::from_secs(3), handle_connection(conn));
-        tokio::spawn(async move {
-            let res = fut.await;
-            match res {
-                Err(err) => {
-                    error!("timeout occured {}", err);
-                }
-                Ok(res2) => match res2 {
+    async fn listen(self: &Self) {
+        while let Some(conn) = self.endpoint.accept().await {
+            debug!("connection incoming");
+            let fut = timeout(
+                Duration::from_millis(self.options.connect_timeout),
+                handle_connection(conn),
+            );
+            tokio::spawn(async move {
+                let res = fut.await;
+                match res {
                     Err(err) => {
-                        error!("connection failed: {reason}", reason = err.to_string())
+                        error!("timeout occured {}", err);
                     }
-                    Ok((send, recv, conn)) => {
-                        let cancel_token = CancellationToken::new();
-                        let _ = handle_as_stdin(send, recv, cancel_token.clone()).await;
-                        conn.close(0u32.into(), b"done");
-                    }
-                },
-            }
-        });
+                    Ok(res2) => match res2 {
+                        Err(err) => {
+                            error!("connection failed: {reason}", reason = err.to_string())
+                        }
+                        Ok((send, recv, conn)) => {
+                            let cancel_token = CancellationToken::new();
+                            let _ = handle_as_stdin(send, recv, cancel_token.clone()).await;
+                            conn.close(0u32.into(), b"done");
+                        }
+                    },
+                }
+            });
+        }
     }
+}
+
+async fn run(options: FerrumServerConfig) -> Result<()> {
+    let cert_chain = create_certs_chain(&options)
+        .map_err(|e| error!("create certs failed {}", e))
+        .unwrap();
+
+    let server = FerrumServer::new(options, cert_chain)?;
+
+    server.listen().await;
 
     Ok(())
 }
@@ -242,7 +269,7 @@ async fn handle_connection(
     conn: quinn::Connecting,
 ) -> Result<(SendStream, RecvStream, Connection)> {
     let connection = conn.await?;
-    info!(
+    /*  info!(
         "connection remote: {} {}",
         connection.remote_address(),
         connection
@@ -255,7 +282,7 @@ async fn handle_connection(
                 || "<none>".into(),
                 |x| String::from_utf8_lossy(&x).into_owned()
             )
-    );
+    ); */
 
     info!("established {}", connection.remote_address());
 
