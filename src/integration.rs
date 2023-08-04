@@ -6,13 +6,9 @@ fn main() {}
 #[cfg(test)]
 mod tests {
 
-    use std::borrow::BorrowMut;
-    use std::io::{BufReader, BufWriter};
-    use std::{net::ToSocketAddrs, sync::Arc, sync::Mutex};
-
     use crate::client::{FerrumClient, FerrumClientConfig};
-    use crate::common::get_log_level;
-    use crate::server::{FerrumServer, FerrumServerCertChain, FerrumServerConfig};
+
+    use crate::server::{FerrumServer, FerrumServerConfig};
     use tokio::time::Duration;
     use tokio_util::sync::CancellationToken;
     fn create_client_config(ip: &str) -> FerrumClientConfig {
@@ -42,6 +38,7 @@ mod tests {
             cert: None,
             connect_timeout: 3000,
             idle_timeout: 15000,
+            gateway_id: "gateway_test_id".to_string(),
         }
     }
 

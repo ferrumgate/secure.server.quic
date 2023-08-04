@@ -56,15 +56,13 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Debug specific unit test in library 'mylib'",
+            "name": "Debug specific unit test",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=mylib"
+                    "test_redis_subscribe_publish",
                 ],
                 "filter": {
                     "name": "mylib",

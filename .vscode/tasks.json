@@ -18,6 +18,28 @@
 			],
 			"group": "build",
 			"label": "rust: cargo check"
+		},
+		{
+			"type": "cargo",
+			"command": "test",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo test"
+		},
+		{
+			"type": "cargo",
+			"command": "test",
+			"args": [
+				"--",
+				"--nocapture"
+			],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo test"
 		}
 	]
 }

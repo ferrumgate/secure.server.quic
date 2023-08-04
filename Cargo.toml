@@ -44,7 +44,7 @@ redis = { version = "0.23.1", features = [
     "connection-manager",
     "tokio-comp",
     "r2d2",
-    "aio",
+
 ] }
 rand = "0.8.5"
 futures-core = "0.3.28"

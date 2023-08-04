@@ -1,35 +1,41 @@
-use anyhow::{anyhow, Error, Ok, Result};
-use futures_core::stream;
+use anyhow::{Ok, Result};
 
-use redis::{AsyncCommands, Client};
-use std::pin::Pin;
+use redis::AsyncCommands;
 
-use tracing_subscriber::fmt::format;
+use std::time::Duration;
 
-use std::rc::Rc;
-use std::{borrow::BorrowMut, time::Duration};
-use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
 #[allow(unused)]
 pub struct RedisClient {
     host: String,
-
+    username: Option<String>,
+    password: Option<String>,
     client: Option<redis::Client>,
     connection: Option<redis::aio::Connection>,
 }
 
 #[allow(unused)]
 impl RedisClient {
-    pub fn new(host: &str) -> Self {
+    pub fn new(host: &str, username: Option<String>, password: Option<String>) -> Self {
         RedisClient {
             host: host.to_string(),
+            username: username,
+            password: password,
             client: None,
             connection: None,
         }
     }
     async fn internal_connect(self: &mut Self) -> Result<(redis::Client, redis::aio::Connection)> {
         let mut url = format!("redis://{}/", self.host.clone());
+        if self.username.is_some() {
+            url = format!(
+                "redis://{}:{}@{}/",
+                self.username.as_ref().unwrap().clone(),
+                self.password.as_ref().unwrap().clone(),
+                self.host.clone(),
+            );
+        }
 
         let client = redis::Client::open(url)?;
         let connection = client.get_async_connection().await?;
@@ -49,16 +55,16 @@ impl RedisClient {
         self.client = Some(client);
 
         let mut pubsub = connection.into_pubsub();
+
         tokio::time::timeout(timeout, pubsub.subscribe(channel)).await?;
 
         let mut pubsub_stream = pubsub.on_message();
         let pubsub_msg = tokio::time::timeout(timeout, pubsub_stream.next()).await?;
 
         if let None = pubsub_msg {
-            eprintln!("message is null");
             return Ok("".to_string());
         }
-        eprintln!("message is not null");
+
         Ok(pubsub_msg.unwrap().get_payload()?)
     }
     pub async fn publish(self: &mut Self, channel: &str, message: &str) -> Result<()> {
@@ -91,9 +97,11 @@ impl RedisClient {
             .arg(gateway_id)
             .arg("type")
             .arg("quic")
+            .ignore()
             .cmd("pexpire")
             .arg(format!("/tunnel/id/{}", tunnel_id))
             .arg(timeout.to_string())
+            .ignore()
             .query_async(connection)
             .await?;
         Ok(())
@@ -119,19 +127,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_connect() {
-        let mut redis = RedisClient::new("0.0.0.0:6379");
+        let mut redis = RedisClient::new("0.0.0.0:6379", None, None);
         let result = redis.connect().await;
         assert_eq!(result.is_ok(), true);
     }
     #[tokio::test]
     async fn test_redis_connect_fails() {
-        let mut redis = RedisClient::new("0.0.0.0:6380");
+        let mut redis = RedisClient::new("0.0.0.0:6380", None, None);
         let result = redis.connect().await;
         assert_eq!(result.is_err(), true);
     }
     #[tokio::test]
     async fn test_redis_subscribe_timeout() {
-        let mut redis = RedisClient::new("0.0.0.0:6379");
+        let mut redis = RedisClient::new("0.0.0.0:6379", None, None);
         let channel = format!("hello {}", Instant::now().elapsed().as_nanos());
         let result = redis
             .subscribe(channel.as_str(), std::time::Duration::from_millis(5))
@@ -141,14 +149,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_subscribe_publish() {
-        let mut redis = RedisClient::new("0.0.0.0:6379");
-
         let mut response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let mut res2 = response.clone();
+
         let task1 = tokio::spawn(async move {
-            let result = redis
-                .subscribe("hello34", Duration::from_millis(4000))
-                .await;
+            let mut redis = RedisClient::new("0.0.0.0:6379", None, None);
+            let result = redis.subscribe("hello34", Duration::from_millis(400)).await;
             if result.is_err() {
                 return;
             }
@@ -156,11 +162,13 @@ mod tests {
             res2.lock().unwrap().push_str(result.unwrap().as_str());
         });
 
-        let mut redis2 = RedisClient::new("0.0.0.0:6379");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
         let res = redis2.connect().await;
         if let Err(err) = res {
             return;
         }
+
         let res = redis2.publish("hello34", "world").await;
         if let Err(res) = res {
             return;
@@ -173,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_multi_publish_connection() {
-        let mut redis2 = RedisClient::new("0.0.0.0:6379");
+        let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
         let res = redis2.connect().await;
         if let Err(err) = res {
             return;
@@ -190,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn test_redis_multi_publish_connection2() {
         for i in 1..1000 {
-            let mut redis2 = RedisClient::new("0.0.0.0:6379");
+            let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
             let res = redis2.connect().await;
             if let Err(err) = res {
                 return;
@@ -211,9 +219,9 @@ mod tests {
 
         let tasks = (1..100).for_each(|i| {
             let n1 = rng.gen_range(0..1000);
-            let n2 = rng.gen_range(0..3000);
+            let n2 = rng.gen_range(0..1000);
             set.spawn(async move {
-                let mut redis2 = RedisClient::new("0.0.0.0:6379");
+                let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
                 let res = redis2.connect().await;
                 if let Err(err) = res {
                     return;
@@ -231,5 +239,54 @@ mod tests {
         while let Some(item) = set.join_next().await {}
 
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    #[tokio::test]
+    async fn test_redis_open_5000k_connection() {
+        // if fails check ulimit -Sn
+        // for increment set on bash ulimit -Sn 10000
+        let mut set = tokio::task::JoinSet::new();
+        let mut rng = rand::thread_rng();
+        struct Atomic {
+            val: i32,
+        }
+        let counter = Arc::new(std::sync::Mutex::new(Atomic { val: 0 }));
+        let tasks = (1..5000).for_each(|i| {
+            let n1 = rng.gen_range(0..1000);
+            let n2 = rng.gen_range(0..1000);
+            let counter = counter.clone();
+            set.spawn(async move {
+                let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
+                let res = redis2.connect().await;
+                if let Err(err) = res {
+                    eprintln!("connection open failed {}", err);
+                    let mut x = counter.lock().unwrap();
+                    x.val = x.val + 1;
+                    return;
+                }
+                let res = redis2.publish("hello2", "world").await;
+                if let Err(res) = res {
+                    eprintln!("publish failed");
+                    return;
+                }
+
+                tokio::time::sleep(Duration::from_millis(5000)).await;
+            });
+        });
+        while let Some(item) = set.join_next().await {}
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(counter.lock().unwrap().val, 0);
+    }
+
+    #[tokio::test]
+    async fn test_redis_execute() {
+        let mut redis2 = RedisClient::new("0.0.0.0:6379", None, None);
+        let res = redis2.connect().await;
+        assert_eq!(res.is_err(), false);
+
+        let res = redis2
+            .execute("tunnelid", "clientip", "gatewayid", 10000)
+            .await;
+        assert_eq!(res.is_err(), false);
     }
 }

@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
-use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
+use quinn::{ClientConfig, Endpoint, RecvStream, SendStream, ServerConfig};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use std::pin::Pin;
-use std::{error::Error, future::Future, net::SocketAddr, sync::Arc};
+
+use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -92,7 +92,7 @@ pub fn get_log_level(level: &String) -> Level {
 
     return Level::INFO;
 }
-
+#[allow(dead_code)]
 pub fn generate_random_string(len: usize) -> String {
     let rand_string: String = thread_rng()
         .sample_iter(&Alphanumeric)

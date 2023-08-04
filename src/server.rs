@@ -19,14 +19,14 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use common::{get_log_level, handle_as_stdin};
-use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, ServerConfig, VarInt};
-use rcgen::DistinguishedName;
+use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
+
 use rustls::{Certificate, PrivateKey};
 use tokio::select;
-use tokio::signal::{ctrl_c, unix::signal, unix::Signal, unix::SignalKind};
+use tokio::signal::{unix::signal, unix::SignalKind};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 pub struct FerrumServerConfig {
     pub listen: SocketAddr,
@@ -38,6 +38,7 @@ pub struct FerrumServerConfig {
     pub cert: Option<PathBuf>,
     pub connect_timeout: u64,
     pub idle_timeout: u32,
+    pub gateway_id: String,
 }
 
 #[derive(Parser, Debug)]
@@ -67,6 +68,8 @@ struct Opt {
 
     #[clap(long = "loglevel", default_value = "info")]
     loglevel: String,
+    #[clap(long = "gateway_id", default_value = "gateway_id")]
+    gateway_id: String,
 }
 
 #[allow(unused)]
@@ -98,6 +101,7 @@ fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
         keylog: opt.keylog,
         connect_timeout: 3000,
         idle_timeout: 15000,
+        gateway_id: opt.gateway_id,
     };
     Ok(config)
 }

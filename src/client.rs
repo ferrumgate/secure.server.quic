@@ -264,8 +264,8 @@ impl FerrumClient {
 
     pub async fn process(
         &mut self,
-        mut send: SendStream,
-        mut recv: RecvStream,
+        send: SendStream,
+        recv: RecvStream,
         cancel_token: CancellationToken,
     ) -> Result<()> {
         handle_as_stdin(send, recv, cancel_token).await
