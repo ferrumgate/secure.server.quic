@@ -15,11 +15,11 @@ quic tunnel opener, manager and closer
 # manuel testing
 
 ```sh
-    cargo run --bin server -- --loglevel debug --stdin
+    cargo run --bin server -- --loglevel debug --stdinout
 ```
 
 ```sh
-    cargo run --bin client -- --loglevel debug --insecure --stdin
+    cargo run --bin client -- --loglevel debug --insecure --stdinout
 ```
 
 ## ssl cert info

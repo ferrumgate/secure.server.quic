@@ -15,6 +15,11 @@ path = "src/server.rs"
 name = "client"        # The name of the target.
 path = "src/client.rs"
 
+[[bin]]
+name = "integration"        # The name of the target.
+bench = false
+path = "src/integration.rs"
+
 
 [dependencies]
 anyhow = "1.0.71"
@@ -35,3 +40,11 @@ tokio-stream = "0.1.14"
 tokio-macros = "2.1.0"
 tokio-test = "0.4.2"
 tun = { version = "0.5.5", features = ["async"] }
+redis = { version = "0.23.1", features = [
+    "connection-manager",
+    "tokio-comp",
+    "r2d2",
+    "aio",
+] }
+rand = "0.8.5"
+futures-core = "0.3.28"

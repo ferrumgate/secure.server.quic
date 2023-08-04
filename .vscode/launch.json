@@ -26,6 +26,17 @@
             "cwd": "${workspaceRoot}",
         },
         {
+            "name": "Launch integration",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/integration",
+            "args": [
+                "--host",
+                "test.ferrumgate.com"
+            ],
+            "cwd": "${workspaceRoot}",
+        },
+        {
             "name": "Debug ALL unit tests in library 'mylib'",
             "type": "lldb",
             "request": "launch",

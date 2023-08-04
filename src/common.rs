@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
+use std::pin::Pin;
+use std::{error::Error, future::Future, net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +72,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     Ok((server_config, cert_der))
 }
 
+#[allow(dead_code)]
 pub fn get_log_level(level: &String) -> Level {
     if level.to_ascii_lowercase() == "trace" {
         return Level::TRACE;
@@ -89,6 +93,16 @@ pub fn get_log_level(level: &String) -> Level {
     return Level::INFO;
 }
 
+pub fn generate_random_string(len: usize) -> String {
+    let rand_string: String = thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect();
+    rand_string
+}
+
+#[allow(dead_code)]
 pub async fn handle_as_stdin(
     mut send: SendStream,
     mut recv: RecvStream,
@@ -177,6 +191,11 @@ pub async fn handle_as_stdin(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[tokio::test]
-    async fn test_handle_input() {}
+    async fn test_generate_random_string() {
+        let val = generate_random_string(16);
+
+        assert_eq!(val.len(), 16);
+    }
 }

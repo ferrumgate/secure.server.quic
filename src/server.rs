@@ -2,7 +2,11 @@
 //!
 //! Checkout the `README.md` for guidance.
 
+#[path = "common.rs"]
 mod common;
+
+#[path = "redis_client.rs"]
+mod redis_client;
 
 use std::{
     fs,
@@ -18,20 +22,22 @@ use common::{get_log_level, handle_as_stdin};
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, ServerConfig, VarInt};
 use rcgen::DistinguishedName;
 use rustls::{Certificate, PrivateKey};
+use tokio::select;
+use tokio::signal::{ctrl_c, unix::signal, unix::Signal, unix::SignalKind};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub struct FerrumServerConfig {
-    listen: SocketAddr,
-    ip: String,
-    stdinout: bool,
-    loglevel: String,
-    keylog: bool,
-    key: Option<PathBuf>,
-    cert: Option<PathBuf>,
-    connect_timeout: u64,
-    idle_timeout: u32,
+    pub listen: SocketAddr,
+    pub ip: String,
+    pub stdinout: bool,
+    pub loglevel: String,
+    pub keylog: bool,
+    pub key: Option<PathBuf>,
+    pub cert: Option<PathBuf>,
+    pub connect_timeout: u64,
+    pub idle_timeout: u32,
 }
 
 #[derive(Parser, Debug)]
@@ -95,7 +101,7 @@ fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
     };
     Ok(config)
 }
-
+#[allow(dead_code)]
 fn main() {
     let _rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -224,13 +230,52 @@ impl FerrumServer {
             endpoint: endpoint,
         })
     }
-    async fn listen(self: &Self) {
-        while let Some(conn) = self.endpoint.accept().await {
+
+    async fn handle_connection(
+        conn: quinn::Connecting,
+    ) -> Result<(SendStream, RecvStream, Connection)> {
+        let connection = conn.await?;
+        /*  info!(
+            "connection remote: {} {}",
+            connection.remote_address(),
+            connection
+                .handshake_data()
+                .unwrap()
+                .downcast::<quinn::crypto::rustls::HandshakeData>()
+                .unwrap()
+                .protocol
+                .map_or_else(
+                    || "<none>".into(),
+                    |x| String::from_utf8_lossy(&x).into_owned()
+                )
+        ); */
+
+        info!("established {}", connection.remote_address());
+
+        // Each stream initiated by the client constitutes a new request.
+
+        let (send, recv) = connection.accept_bi().await?;
+        info!("stream opened {}", connection.remote_address());
+        Ok((send, recv, connection))
+    }
+    #[allow(unused)]
+    pub fn create_server_cert_chain(option: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
+        create_certs_chain(option)
+    }
+
+    pub async fn listen(self: &Self, cancel_token: CancellationToken) {
+        let is_stdin_out = self.options.stdinout;
+        let cancel_token = cancel_token.clone();
+        while let Some(conn) = select! {
+            conn=self.endpoint.accept()=>{conn},
+            _=cancel_token.cancelled()=>{None}
+        } {
             debug!("connection incoming");
             let fut = timeout(
                 Duration::from_millis(self.options.connect_timeout),
-                handle_connection(conn),
+                FerrumServer::handle_connection(conn),
             );
+            let cancel_token = cancel_token.clone();
             tokio::spawn(async move {
                 let res = fut.await;
                 match res {
@@ -242,8 +287,9 @@ impl FerrumServer {
                             error!("connection failed: {reason}", reason = err.to_string())
                         }
                         Ok((send, recv, conn)) => {
-                            let cancel_token = CancellationToken::new();
-                            let _ = handle_as_stdin(send, recv, cancel_token.clone()).await;
+                            if is_stdin_out {
+                                let _ = handle_as_stdin(send, recv, cancel_token).await;
+                            }
                             conn.close(0u32.into(), b"done");
                         }
                     },
@@ -251,44 +297,56 @@ impl FerrumServer {
             });
         }
     }
+    #[allow(unused)]
+    pub fn close(self: &Self) {
+        self.endpoint.wait_idle();
+        self.endpoint.close(VarInt::from_u32(0_u32), b"close");
+    }
 }
 
+#[allow(dead_code)]
 async fn run(options: FerrumServerConfig) -> Result<()> {
     let cert_chain = create_certs_chain(&options)
         .map_err(|e| error!("create certs failed {}", e))
         .unwrap();
 
     let server = FerrumServer::new(options, cert_chain)?;
+    let signal_ctrlc = tokio::signal::ctrl_c();
+    let mut signal_sigint = signal(SignalKind::interrupt())?;
+    let cancel_token = CancellationToken::new();
+    let cancel_token_cloned = cancel_token.clone();
+    let cancel_token_cloned2 = cancel_token.clone();
+    let _ = select! {
+        result=server.listen(cancel_token)=>result,
+        signal=signal_ctrlc=>{
+            match signal {
+            Ok(()) => {
+                info!("canceling");
+                cancel_token_cloned.cancel();
 
-    server.listen().await;
+            },
+            Err(err) => {
+                error!("Unable to listen for shutdown signal: {}", err);
+                // we also shut down in case of error
+            }
+            }
+            ()
+        },
+        signal= signal_sigint.recv()=>{
+            match signal {
+            Some(()) => {
+                info!("canceling");
+                cancel_token_cloned2.cancel();
+
+            },
+            _ => {
+                error!("Unable to listen for integrrap signal");
+                // we also shut down in case of error
+            }
+            }
+            ()
+        }
+    };
 
     Ok(())
-}
-
-async fn handle_connection(
-    conn: quinn::Connecting,
-) -> Result<(SendStream, RecvStream, Connection)> {
-    let connection = conn.await?;
-    /*  info!(
-        "connection remote: {} {}",
-        connection.remote_address(),
-        connection
-            .handshake_data()
-            .unwrap()
-            .downcast::<quinn::crypto::rustls::HandshakeData>()
-            .unwrap()
-            .protocol
-            .map_or_else(
-                || "<none>".into(),
-                |x| String::from_utf8_lossy(&x).into_owned()
-            )
-    ); */
-
-    info!("established {}", connection.remote_address());
-
-    // Each stream initiated by the client constitutes a new request.
-
-    let (send, recv) = connection.accept_bi().await?;
-    info!("stream opened {}", connection.remote_address());
-    Ok((send, recv, connection))
 }

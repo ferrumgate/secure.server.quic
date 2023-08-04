@@ -1,5 +1,6 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
+#[path = "common.rs"]
 mod common;
 
 use std::{
@@ -16,7 +17,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 
 use common::{get_log_level, handle_as_stdin};
-use quinn::{IdleTimeout, RecvStream, TransportConfig, VarInt};
+use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::runtime::Builder;
@@ -30,15 +31,17 @@ use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 pub struct FerrumClientConfig {
-    host: String,
-    host_port: String,
-    ip: SocketAddr,
-    ca: Option<PathBuf>,
-    keylog: bool,
-    rebind: bool,
-    insecure: bool,
-    stdinout: bool,
-    loglevel: String,
+    pub host: String,
+    pub host_port: String,
+    pub ip: SocketAddr,
+    pub ca: Option<PathBuf>,
+    pub keylog: bool,
+    pub rebind: bool,
+    pub insecure: bool,
+    pub stdinout: bool,
+    pub loglevel: String,
+    pub idle_timeout: u32,
+    pub connect_timeout: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -86,6 +89,8 @@ fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
         insecure: opt.insecure,
         stdinout: opt.stdinout,
         loglevel: opt.loglevel.clone(),
+        connect_timeout: 3000,
+        idle_timeout: 15000,
     };
 
     Ok(config)
@@ -195,15 +200,18 @@ impl FerrumClient {
         client
     }
 
-    pub async fn connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+    async fn internal_connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
         let crypto = self.crypto.clone();
         let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
         let mut transport_config = TransportConfig::default();
 
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
-        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(15000_u32))));
-        transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
+            self.options.idle_timeout,
+        ))));
+        transport_config
+            .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
 
         client_config.transport_config(Arc::new(transport_config));
 
@@ -233,6 +241,15 @@ impl FerrumClient {
         info!("stream opened");
         Ok((send, recv))
     }
+
+    pub async fn connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+        let result = timeout(
+            Duration::from_millis(self.options.connect_timeout),
+            self.internal_connect(),
+        )
+        .await?;
+        result
+    }
     pub fn close(&mut self) {
         if self.connection.is_some() {
             self.connection
@@ -241,29 +258,36 @@ impl FerrumClient {
                 .close(0u32.into(), b"done");
         }
     }
+    pub fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
+        create_root_certs(config)
+    }
+
+    pub async fn process(
+        &mut self,
+        mut send: SendStream,
+        mut recv: RecvStream,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
+        handle_as_stdin(send, recv, cancel_token).await
+    }
 }
 
 async fn run(options: FerrumClientConfig) -> Result<()> {
     let remote = options.ip;
-    info!("connect to {}", remote);
+    info!("connecting to {}", remote);
     let roots = create_root_certs(&options)?;
 
     let mut client: FerrumClient = FerrumClient::new(options, roots);
-    let result = timeout(Duration::from_secs(5), client.connect())
-        .await
-        .map_err(|err| {
-            error!("connect timeout");
-            err
-        })?;
-    if let Err(err) = result {
-        return Err(err);
-    }
+    let result = client.connect().await.map_err(|err| {
+        error!("could not connect {}", err);
+        err
+    })?;
 
-    let (send, recv) = result.unwrap();
+    let (send, recv) = result;
     let token = CancellationToken::new();
 
     let result = select! {
-        result=handle_as_stdin(send, recv, token.clone()) =>{
+        result=client.process(send, recv, token.clone()) =>{
              result
         },
         signal=signal::ctrl_c()=>{
@@ -293,13 +317,12 @@ fn duration_secs(x: &Duration) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
     use std::{fs::create_dir, net::ToSocketAddrs};
 
     use clap::Parser;
 
-    use crate::{
-        create_root_certs, parse_config, ClientConfigOpt, FerrumClient, FerrumClientConfig,
-    };
+    use super::*;
 
     #[test]
     fn test_parse_config() {
@@ -338,6 +361,8 @@ mod tests {
             insecure: false,
             stdinout: false,
             loglevel: "debug".to_string(),
+            idle_timeout: 15000,
+            connect_timeout: 3000,
         };
         let roots = create_root_certs(&config);
         assert_eq!(roots.is_ok(), true);
