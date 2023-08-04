@@ -18,12 +18,12 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use common::{get_log_level, handle_as_stdin};
+use common::handle_as_stdin;
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 
 use rustls::{Certificate, PrivateKey};
 use tokio::select;
-use tokio::signal::{unix::signal, unix::SignalKind};
+
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
@@ -43,37 +43,37 @@ pub struct FerrumServerConfig {
 
 #[derive(Parser, Debug)]
 #[clap(name = "server")]
-struct Opt {
+pub struct ServerOpt {
     /// file to log TLS keys to for debugging
     #[clap(long = "keylog")]
-    keylog: bool,
+    pub keylog: bool,
 
     /// TLS private key in PEM format
     #[clap(short = 'k', long = "key", requires = "cert")]
-    key: Option<PathBuf>,
+    pub key: Option<PathBuf>,
     /// TLS certificate in PEM format
     #[clap(short = 'c', long = "cert", requires = "key")]
-    cert: Option<PathBuf>,
+    pub cert: Option<PathBuf>,
     /// Enable stateless retries
     #[clap(long = "stateless-retry")]
-    stateless_retry: bool,
+    pub stateless_retry: bool,
     /// Address to listen on
     #[clap(long = "listen", default_value = "[::]:8443")]
-    listen: Option<String>,
+    pub listen: Option<String>,
 
     #[clap(long = "port", default_value = "8443")]
-    port: u16,
+    pub port: u16,
     #[clap(long = "stdinout")]
-    stdinout: bool,
+    pub stdinout: bool,
 
     #[clap(long = "loglevel", default_value = "info")]
-    loglevel: String,
+    pub loglevel: String,
     #[clap(long = "gateway_id", default_value = "gateway_id")]
-    gateway_id: String,
+    pub gateway_id: String,
 }
 
 #[allow(unused)]
-fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
+pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
     let mut ip = "".to_owned();
     match opt.listen {
         None => {
@@ -105,45 +105,13 @@ fn parse_config(opt: Opt) -> Result<FerrumServerConfig> {
     };
     Ok(config)
 }
-#[allow(dead_code)]
-fn main() {
-    let _rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let copt = Opt::parse();
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(get_log_level(&copt.loglevel))
-            .finish(),
-    )
-    .unwrap();
-
-    let opt = parse_config(copt);
-    if let Err(e) = opt {
-        error!("ERROR: parse failed: {}", e);
-        ::std::process::exit(1);
-    }
-
-    _rt.block_on(async {
-        let code = {
-            if let Err(e) = run(opt.unwrap()).await {
-                error!("ERROR: {e}");
-                1
-            } else {
-                0
-            }
-        };
-        ::std::process::exit(code);
-    });
-}
 
 pub struct FerrumServerCertChain {
     certs: Vec<Certificate>,
     key: PrivateKey,
 }
 
-fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
+pub fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
         let key = if key_path.extension().map_or(false, |x| x == "der") {
@@ -306,51 +274,4 @@ impl FerrumServer {
         self.endpoint.wait_idle();
         self.endpoint.close(VarInt::from_u32(0_u32), b"close");
     }
-}
-
-#[allow(dead_code)]
-async fn run(options: FerrumServerConfig) -> Result<()> {
-    let cert_chain = create_certs_chain(&options)
-        .map_err(|e| error!("create certs failed {}", e))
-        .unwrap();
-
-    let server = FerrumServer::new(options, cert_chain)?;
-    let signal_ctrlc = tokio::signal::ctrl_c();
-    let mut signal_sigint = signal(SignalKind::interrupt())?;
-    let cancel_token = CancellationToken::new();
-    let cancel_token_cloned = cancel_token.clone();
-    let cancel_token_cloned2 = cancel_token.clone();
-    let _ = select! {
-        result=server.listen(cancel_token)=>result,
-        signal=signal_ctrlc=>{
-            match signal {
-            Ok(()) => {
-                info!("canceling");
-                cancel_token_cloned.cancel();
-
-            },
-            Err(err) => {
-                error!("Unable to listen for shutdown signal: {}", err);
-                // we also shut down in case of error
-            }
-            }
-            ()
-        },
-        signal= signal_sigint.recv()=>{
-            match signal {
-            Some(()) => {
-                info!("canceling");
-                cancel_token_cloned2.cancel();
-
-            },
-            _ => {
-                error!("Unable to listen for integrrap signal");
-                // we also shut down in case of error
-            }
-            }
-            ()
-        }
-    };
-
-    Ok(())
 }

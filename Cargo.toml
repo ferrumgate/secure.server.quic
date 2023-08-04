@@ -7,18 +7,17 @@ edition = "2021"
 
 
 [[bin]]
-name = "server"        # The name of the target.
-path = "src/server.rs"
+name = "server"             # The name of the target.
+path = "src/server_main.rs"
 
 
 [[bin]]
-name = "client"        # The name of the target.
-path = "src/client.rs"
+name = "client"             # The name of the target.
+path = "src/client_main.rs"
 
-[[bin]]
-name = "integration"        # The name of the target.
+[lib]
+name = "ferrum" # The name of the target.
 bench = false
-path = "src/integration.rs"
 
 
 [dependencies]

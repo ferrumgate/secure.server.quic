@@ -1,14 +1,9 @@
-mod client;
-mod common;
-mod server;
-fn main() {}
-
 #[cfg(test)]
 mod tests {
 
-    use crate::client::{FerrumClient, FerrumClientConfig};
+    use ferrum::client::{FerrumClient, FerrumClientConfig};
 
-    use crate::server::{FerrumServer, FerrumServerConfig};
+    use ferrum::server::{FerrumServer, FerrumServerConfig};
     use tokio::time::Duration;
     use tokio_util::sync::CancellationToken;
     fn create_client_config(ip: &str) -> FerrumClientConfig {

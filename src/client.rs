@@ -46,31 +46,31 @@ pub struct FerrumClientConfig {
 
 #[derive(Parser, Debug)]
 #[clap(name = "client")]
-struct ClientConfigOpt {
+pub struct ClientConfigOpt {
     /// Perform NSS-compatible TLS key logging to the file specified in `SSLKEYLOGFILE`.
     #[clap(long = "keylog")]
-    keylog: bool,
+    pub keylog: bool,
 
     #[clap(long = "insecure")]
-    insecure: bool,
+    pub insecure: bool,
 
     #[clap(long = "host", default_value = "localhost:8443")]
-    host: String,
+    pub host: String,
 
     /// Custom certificate authority to trust, in DER format
     #[clap(long = "ca")]
-    ca: Option<PathBuf>,
+    pub ca: Option<PathBuf>,
 
     /// Simulate NAT rebinding after connecting
     #[clap(long = "rebind")]
-    rebind: bool,
+    pub rebind: bool,
     #[clap(long = "stdinout")]
-    stdinout: bool,
+    pub stdinout: bool,
     #[clap(long = "loglevel", default_value = "info")]
-    loglevel: String,
+    pub loglevel: String,
 }
 #[allow(unused)]
-fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
+pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
     let mut abc = opt.host.to_socket_addrs()?;
     let ip = abc.next();
     if ip.is_none() {
@@ -96,40 +96,6 @@ fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
     Ok(config)
 }
 
-fn main() {
-    let _rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    let copt = ClientConfigOpt::parse();
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(get_log_level(&copt.loglevel))
-            .finish(),
-    )
-    .unwrap();
-
-    let opt = parse_config(copt);
-
-    if let Err(e) = opt {
-        error!("ERROR: parse failed: {}", e);
-        ::std::process::exit(1);
-    }
-    _rt.block_on(async {
-        let code = {
-            if let Err(e) = run(opt.unwrap()).await {
-                error!("ERROR: {e}");
-                1
-            } else {
-                0
-            }
-        };
-
-        ::std::process::exit(code);
-    });
-}
-
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
 struct SkipServerVerification;
 
@@ -153,7 +119,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
+pub fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
 
     roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
@@ -270,45 +236,6 @@ impl FerrumClient {
     ) -> Result<()> {
         handle_as_stdin(send, recv, cancel_token).await
     }
-}
-
-async fn run(options: FerrumClientConfig) -> Result<()> {
-    let remote = options.ip;
-    info!("connecting to {}", remote);
-    let roots = create_root_certs(&options)?;
-
-    let mut client: FerrumClient = FerrumClient::new(options, roots);
-    let result = client.connect().await.map_err(|err| {
-        error!("could not connect {}", err);
-        err
-    })?;
-
-    let (send, recv) = result;
-    let token = CancellationToken::new();
-
-    let result = select! {
-        result=client.process(send, recv, token.clone()) =>{
-             result
-        },
-        signal=signal::ctrl_c()=>{
-            match signal {
-            Ok(()) => {
-                info!("canceling");
-                token.cancel();
-
-            },
-            Err(err) => {
-                error!("Unable to listen for shutdown signal: {}", err);
-                // we also shut down in case of error
-            }
-            }
-            Ok(())
-
-        }
-    };
-
-    client.close();
-    result
 }
 
 fn duration_secs(x: &Duration) -> f32 {
