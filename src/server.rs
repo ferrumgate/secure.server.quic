@@ -5,6 +5,9 @@
 #[path = "common.rs"]
 mod common;
 
+#[path = "tun.rs"]
+mod tun;
+
 #[path = "redis_client.rs"]
 mod redis_client;
 
@@ -25,6 +28,7 @@ use rustls::{Certificate, PrivateKey};
 use tokio::select;
 
 use tokio::time::timeout;
+
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 

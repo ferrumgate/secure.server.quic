@@ -2,6 +2,8 @@
 
 #[path = "common.rs"]
 mod common;
+#[path = "tun.rs"]
+mod tun;
 
 use std::{
     fs,
