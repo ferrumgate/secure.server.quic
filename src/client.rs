@@ -2,23 +2,26 @@
 
 #[path = "common.rs"]
 mod common;
-#[path = "tun.rs"]
-mod tun;
+#[path = "ferrum_tun.rs"]
+mod ferrum_tun;
 
 use std::{
+    borrow::BorrowMut,
     fs,
     io::{self, Write},
     net::{SocketAddr, ToSocketAddrs},
     ops::Deref,
     path::PathBuf,
+    str,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use clap::Parser;
 
 use common::{get_log_level, handle_as_stdin};
+use ferrum_tun::FerrumTun;
 use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,7 +29,6 @@ use tokio::runtime::Builder;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio::{select, signal};
-
 use tokio_test::block_on;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
@@ -236,7 +238,222 @@ impl FerrumClient {
         recv: RecvStream,
         cancel_token: CancellationToken,
     ) -> Result<()> {
-        handle_as_stdin(send, recv, cancel_token).await
+        if self.options.stdinout {
+            handle_as_stdin(send, recv, cancel_token).await
+        } else {
+            self.handle_client(send, recv, cancel_token).await
+        }
+    }
+    pub async fn handle_open(
+        self: &mut Self,
+        recv: &mut RecvStream,
+        cancel_token: CancellationToken,
+    ) -> Result<String> {
+        let mut array: Vec<u8> = vec![0; 1024];
+        let mut stdout = tokio::io::stderr();
+        select! {
+            _=cancel_token.cancelled()=>{
+                warn!("cancelled");
+                return Err(anyhow!("cancelled"));
+            },
+
+            resp = recv
+                    .read(array.as_mut())=>{
+
+                if let Err(e) = resp {
+                    error!("stream read error {}", e);
+                    return Err(anyhow!("stream read error"));
+                }
+
+                debug!("received data");
+                let response = resp.unwrap();
+                match response {
+                    Some(0) => {
+                        info!("stream closed");
+                        return Err(anyhow!("stream closed"));
+                    }
+                    Some(data) => {
+                        debug!("data received bytes {}", data);
+
+                        let res = stdout.write_all(&array[0..data]).await;
+                        if let Err(e) = res {
+                            error!("stdout write failed {}", e);
+                            return Err(e.into());
+                        }
+                        let val=str::from_utf8(&array[0..data]);
+                        if val.is_err() {
+                            return Err(anyhow!("string conversion failed"));
+                        }
+                        return  Ok(val.unwrap().to_string());
+                    }
+                    None => {
+                        info!("stream finished");
+                        return Err(anyhow!("stream finished"));
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn handle_open_confirmed(
+        self: &mut Self,
+        recv: &mut RecvStream,
+        cancel_token: CancellationToken,
+    ) -> Result<String> {
+        let mut array: Vec<u8> = vec![0; 1024];
+        let mut stdout = tokio::io::stderr();
+        select! {
+            _=cancel_token.cancelled()=>{
+                warn!("cancelled");
+                return Err(anyhow!("cancelled"));
+            },
+
+            resp = recv
+                    .read(array.as_mut())=>{
+
+                if let Err(e) = resp {
+                    error!("stream read error {}", e);
+                    return Err(anyhow!("stream read error"));
+                }
+
+                debug!("received data");
+                let response = resp.unwrap();
+                match response {
+                    Some(0) => {
+                        info!("stream closed");
+                        return Err(anyhow!("stream closed"));
+                    }
+                    Some(data) => {
+                        debug!("data received bytes {}", data);
+
+                        let res = stdout.write_all(&array[0..data]).await;
+                        if let Err(e) = res {
+                            error!("stdout write failed {}", e);
+                            return Err(e.into());
+                        }
+                        let val=str::from_utf8(&array[0..data]);
+                        if val.is_err() {
+                            return Err(anyhow!("string conversion failed"));
+                        }
+                        return  Ok(val.unwrap().to_string());
+                    }
+                    None => {
+                        info!("stream finished");
+                        return Err(anyhow!("stream finished"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn handle_client(
+        self: &mut Self,
+        mut send: SendStream,
+        mut recv: RecvStream,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
+        let stdin = tokio::io::stdin();
+        let ctoken1 = cancel_token.clone();
+
+        //input read
+        let mut reader = BufReader::with_capacity(2048, stdin);
+        let mut line = String::new();
+        //wait for ferrum_open
+        let result = timeout(
+            Duration::from_millis(5000),
+            self.handle_open(&mut recv, cancel_token.clone()),
+        )
+        .await?;
+        if let Err(e) = result {
+            error!("handle open failed {}", e);
+            return Err(e);
+        }
+        if !result.unwrap().starts_with("ferrum_open:") {
+            error!("waits for ferrum_open");
+            return Err(anyhow!("ferrum protocol invalid"));
+        }
+
+        //wait for ferrum_confirm
+        let result = timeout(
+            Duration::from_millis(90000),
+            self.handle_open_confirmed(&mut recv, cancel_token.clone()),
+        )
+        .await?;
+        if let Err(e) = result {
+            error!("handle confirm failed {}", e);
+            return Err(e);
+        }
+        if !result.unwrap().starts_with("ferrum_tunnel_confirmed:") {
+            error!("waits for ferrum_open");
+            return Err(anyhow!("ferrum protocol invalid"));
+        }
+
+        let mut ftun = FerrumTun::new().map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        eprintln!("ferrum_tunnel_opened:{}", ftun.name.as_str());
+
+        //output
+        let mut array: Vec<u8> = vec![0; 1024];
+        //let mut stdout = tokio::io::stderr();
+
+        loop {
+            debug!("waiting for input");
+            select! {
+                _=ctoken1.cancelled()=>{
+                    warn!("cancelled");
+                    break;
+                },
+                tunresp=ftun.read()=>{
+                    debug!("tun readed");
+                    if let Err(e) = tunresp {
+                        error!("tun read error {}", e);
+                        break;
+                    }
+                    let res=send.write_all(tunresp.unwrap().get_bytes()).await;
+                    if let Err(e)= res{
+                        error!("tun read error {}", e);
+                        break;
+                    }
+                },
+                resp = recv
+                        .read(array.as_mut())=>{
+
+                    if let Err(e) = resp {
+                        error!("stream read error {}", e);
+                        break;
+                    }
+
+                    debug!("stream received data");
+                    let response = resp.unwrap();
+                    match response {
+                        Some(0) => {
+                            info!("stream closed");
+                            break;
+                        }
+                        Some(data) => {
+                            debug!("data received bytes {}", data);
+                            let res=ftun.write(&array[0..data]).await;
+                            //let res = stdout.write_all(&array[0..data]).await;
+                            if let Err(e) = res {
+                                error!("tun write failed {}", e);
+                                break;
+                            }
+                        }
+                        None => {
+                            info!("stream finished");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        //debug!("connection closed");
+        debug!("closing everything");
+        Ok(())
     }
 }
 

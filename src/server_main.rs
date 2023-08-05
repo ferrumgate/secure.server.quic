@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use clap::Parser;
 use common::get_log_level;
 use server::{create_certs_chain, parse_config, FerrumServer, FerrumServerConfig, ServerOpt};
@@ -82,7 +82,7 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
 
             },
             _ => {
-                error!("Unable to listen for integrrap signal");
+                error!("Unable to listen for interrupt signal");
                 // we also shut down in case of error
             }
             }

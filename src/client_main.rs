@@ -1,6 +1,6 @@
 mod client;
 mod common;
-use anyhow::{Result};
+use anyhow::Result;
 use clap::Parser;
 
 use client::{create_root_certs, parse_config, ClientConfigOpt, FerrumClient, FerrumClientConfig};
@@ -28,6 +28,7 @@ fn main() {
 
     if let Err(e) = opt {
         error!("ERROR: parse failed: {}", e);
+        eprintln!("ferrum_exit: client exit");
         ::std::process::exit(1);
     }
     _rt.block_on(async {
@@ -39,12 +40,14 @@ fn main() {
                 0
             }
         };
-
+        eprintln!("ferrum_exit: client exit");
         ::std::process::exit(code);
     });
 }
 
 async fn run(options: FerrumClientConfig) -> Result<()> {
+    let process_id = std::process::id();
+    eprintln!("ferrum_pid:{}", process_id);
     let remote = options.ip;
     info!("connecting to {}", remote);
     let roots = create_root_certs(&options)?;
@@ -80,5 +83,6 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
     };
 
     client.close();
+
     result
 }

@@ -1,20 +1,21 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Ok, Result};
 use common::generate_random_string;
 use futures::{SinkExt, StreamExt};
 use std::io::Error;
 
 use tokio_util::codec::Framed;
 use tun::{Configuration, TunPacket, TunPacketCodec};
+#[path = "common.rs"]
 mod common;
 
-pub struct Tun {
-    name: String,
+pub struct FerrumTun {
+    pub name: String,
     stream: Framed<tun::AsyncDevice, TunPacketCodec>,
 }
 
-impl Tun {
+impl FerrumTun {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn new() -> Result<Self>
+    pub fn new() -> Result<Self>
     where
         Self: Sized,
     {
@@ -24,18 +25,22 @@ impl Tun {
         });
         let devname = format!("ferrum{}", generate_random_string(8));
         config.name(devname.clone());
-        let mut dev = tun::create_as_async(&config)?;
+        let dev = tun::create_as_async(&config)?;
 
-        Ok(Tun {
+        Ok(FerrumTun {
             name: devname,
             stream: dev.into_framed(),
         })
     }
-    async fn read(self: &mut Self, buf: &mut [u8]) -> Option<Result<tun::TunPacket, Error>> {
-        self.stream.next().await
+    pub async fn read(self: &mut Self) -> Result<tun::TunPacket> {
+        let res = self.stream.next().await;
+        match res {
+            None => Err(anyhow!("tun data is empty")),
+            Some(data) => Ok(data?),
+        }
     }
 
-    async fn write(self: &mut Self, buf: &[u8]) -> Result<(), std::io::Error> {
+    pub async fn write(self: &mut Self, buf: &[u8]) -> Result<(), std::io::Error> {
         self.stream.send(TunPacket::new(buf.to_vec())).await
     }
 }
@@ -55,7 +60,7 @@ mod tests {
             return;
         }
 
-        let tun_result = Tun::new();
+        let tun_result = FerrumTun::new();
         if let Err(e) = tun_result {
             eprintln!("create tun failed :{}", e);
             assert_eq!(false, true);
@@ -74,7 +79,7 @@ mod tests {
                 return;
             }
 
-            let tun_result = Tun::new();
+            let tun_result = FerrumTun::new();
             if let Err(e) = tun_result {
                 eprintln!("create tun failed :{}", e);
                 assert_eq!(false, true);

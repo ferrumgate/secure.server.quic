@@ -5,8 +5,8 @@
 #[path = "common.rs"]
 mod common;
 
-#[path = "tun.rs"]
-mod tun;
+#[path = "ferrum_tun.rs"]
+mod ferrum_tun;
 
 #[path = "redis_client.rs"]
 mod redis_client;
@@ -24,13 +24,16 @@ use clap::Parser;
 use common::handle_as_stdin;
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 
+use redis::Client;
 use rustls::{Certificate, PrivateKey};
-use tokio::select;
 
+use tokio::select;
 use tokio::time::timeout;
 
+use crate::{common::generate_random_string, server::redis_client::RedisClient};
+use ferrum_tun::FerrumTun;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct FerrumServerConfig {
     pub listen: SocketAddr,
@@ -43,6 +46,9 @@ pub struct FerrumServerConfig {
     pub connect_timeout: u64,
     pub idle_timeout: u32,
     pub gateway_id: String,
+    pub redis_host: String,
+    pub redis_user: Option<String>,
+    pub redis_pass: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -74,6 +80,12 @@ pub struct ServerOpt {
     pub loglevel: String,
     #[clap(long = "gateway_id", default_value = "gateway_id")]
     pub gateway_id: String,
+    #[clap(long = "redis_host", default_value = "localhost:6379")]
+    pub redis_host: String,
+    #[clap(long = "redis_user")]
+    pub redis_user: Option<String>,
+    #[clap(long = "redis_pass")]
+    pub redis_pass: Option<String>,
 }
 
 #[allow(unused)]
@@ -106,8 +118,19 @@ pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
         connect_timeout: 3000,
         idle_timeout: 15000,
         gateway_id: opt.gateway_id,
+        redis_host: opt.redis_host,
+        redis_pass: opt.redis_pass,
+        redis_user: opt.redis_user,
     };
     Ok(config)
+}
+
+pub struct ClientData {
+    client_ip: String,
+    redis_host: String,
+    redis_user: Option<String>,
+    redis_pass: Option<String>,
+    gateway_id: String,
 }
 
 pub struct FerrumServerCertChain {
@@ -239,32 +262,168 @@ impl FerrumServer {
         create_certs_chain(option)
     }
 
+    #[allow(dead_code)]
+    pub async fn handle_client(
+        cd: ClientData,
+        mut send: SendStream,
+        mut recv: RecvStream,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
+        let _stdin = tokio::io::stdin();
+        let ctoken1 = cancel_token.clone();
+        //this block is important for droping
+        {
+            let mut redis = RedisClient::new(
+                cd.redis_host.as_str(),
+                cd.redis_user.clone(),
+                cd.redis_pass.clone(),
+            );
+            let _ = redis.connect().await.map_err(|err| {
+                error!("connecting to redis failed {}", err);
+                err
+            })?;
+            let tunnel = generate_random_string(63);
+
+            redis
+                .execute(
+                    tunnel.as_str(),
+                    cd.client_ip.as_str(),
+                    cd.gateway_id.as_str(),
+                    300000,
+                )
+                .await?;
+            send.write_all(format!("ferrum_open:tunnel={}\n", tunnel).as_bytes())
+                .await?;
+            let _res = redis
+                .subscribe(
+                    format!("/tunnel/authentication/{}", tunnel).as_str(),
+                    Duration::from_millis(60000),
+                )
+                .await?;
+            if _res != "ok:" {
+                error!("could not authenticate {}", cd.client_ip)
+            }
+        }
+        debug!("authentication completed for {}", cd.client_ip);
+        let mut ftun = FerrumTun::new().map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+
+        send.write_all(format!("ferrum_tunnel_confirmed:\n").as_bytes())
+            .await?;
+
+        //output
+        let mut array: Vec<u8> = vec![0; 2048];
+
+        //let mut stdout = tokio::io::stdout();
+
+        loop {
+            debug!("waiting for input");
+            select! {
+                _=ctoken1.cancelled()=>{
+                    warn!("cancelled");
+                    break;
+                },
+                tunresp=ftun.read()=>{
+                    debug!("tun readed");
+                    if let Err(e) = tunresp {
+                        error!("tun read error {}", e);
+                        break;
+                    }
+                    let res=send.write_all(tunresp.unwrap().get_bytes()).await;
+                    if let Err(e)= res{
+                        error!("tun read error {}", e);
+                        break;
+                    }
+                },
+                resp = recv
+                        .read(array.as_mut())=>{
+
+                    if let Err(e) = resp {
+                        error!("stream read error {}", e);
+                        break;
+                    }
+
+                    debug!("stream received data");
+                    let response = resp.unwrap();
+                    match response {
+                        Some(0) => {
+                            info!("stream closed");
+                            break;
+                        }
+                        Some(data) => {
+                            debug!("data received bytes {}", data);
+                            let res=ftun.write(&array[0..data]).await;
+                            //let res = stdout.write_all(&array[0..data]).await;
+                            if let Err(e) = res {
+                                error!("tun write failed {}", e);
+                                break;
+                            }
+                        }
+                        None => {
+                            info!("stream finished");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        //let _ = tokio::io::stdout().flush().await;
+
+        //debug!("connection closed");
+        debug!("closing everything");
+        Ok(())
+    }
+
     pub async fn listen(self: &Self, cancel_token: CancellationToken) {
+        info!("starting listening on {}", self.options.listen);
         let is_stdin_out = self.options.stdinout;
         let cancel_token = cancel_token.clone();
+
         while let Some(conn) = select! {
             conn=self.endpoint.accept()=>{conn},
             _=cancel_token.cancelled()=>{None}
         } {
+            let client_data = ClientData {
+                client_ip: conn.remote_address().to_string(),
+                redis_host: self.options.redis_host.clone(),
+                redis_user: self.options.redis_user.clone(),
+                redis_pass: self.options.redis_pass.clone(),
+                gateway_id: self.options.gateway_id.clone(),
+            };
+            //TODO!("check from rate limit list");
             debug!("connection incoming");
             let fut = timeout(
                 Duration::from_millis(self.options.connect_timeout),
                 FerrumServer::handle_connection(conn),
             );
+
             let cancel_token = cancel_token.clone();
             tokio::spawn(async move {
                 let res = fut.await;
                 match res {
                     Err(err) => {
+                        //TODO("add to rate limit list");
                         error!("timeout occured {}", err);
                     }
                     Ok(res2) => match res2 {
                         Err(err) => {
+                            //TODO!("add to rate limit list");
                             error!("connection failed: {reason}", reason = err.to_string())
                         }
                         Ok((send, recv, conn)) => {
                             if is_stdin_out {
                                 let _ = handle_as_stdin(send, recv, cancel_token).await;
+                            } else {
+                                let _ = FerrumServer::handle_client(
+                                    client_data,
+                                    send,
+                                    recv,
+                                    cancel_token,
+                                )
+                                .await;
                             }
                             conn.close(0u32.into(), b"done");
                         }

@@ -34,6 +34,9 @@ mod tests {
             connect_timeout: 3000,
             idle_timeout: 15000,
             gateway_id: "gateway_test_id".to_string(),
+            redis_host: "localhost:6379".to_string(),
+            redis_pass: None,
+            redis_user: None,
         }
     }
 
