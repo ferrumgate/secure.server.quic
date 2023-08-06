@@ -24,7 +24,6 @@ use clap::Parser;
 use common::handle_as_stdin;
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 
-use redis::Client;
 use rustls::{Certificate, PrivateKey};
 
 use tokio::select;
@@ -218,7 +217,6 @@ impl FerrumServer {
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
         transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
-
         transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
             options.idle_timeout,
         ))));
@@ -309,7 +307,7 @@ impl FerrumServer {
             error!("tun create failed: {}", e);
             e
         })?;
-
+        info!("tun opened: {}", ftun.name);
         send.write_all(format!("ferrum_tunnel_confirmed:\n").as_bytes())
             .await?;
 
@@ -331,9 +329,14 @@ impl FerrumServer {
                         error!("tun read error {}", e);
                         break;
                     }
-                    let res=send.write_all(tunresp.unwrap().get_bytes()).await;
+                    let res=send.write_all(&tunresp.unwrap()).await;
                     if let Err(e)= res{
-                        error!("tun read error {}", e);
+                        error!("send write error {}", e);
+                        break;
+                    }
+                    let res=send.flush().await;
+                    if let Err(e)= res{
+                        error!("send flush error {}", e);
                         break;
                     }
                 },

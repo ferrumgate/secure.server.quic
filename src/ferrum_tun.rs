@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Ok, Result};
 use common::generate_random_string;
 use futures::{SinkExt, StreamExt};
-use std::io::Error;
 
 use tokio_util::codec::Framed;
-use tun::{Configuration, TunPacket, TunPacketCodec};
+use tun::{TunPacket, TunPacketCodec};
 #[path = "common.rs"]
 mod common;
 
@@ -23,6 +22,7 @@ impl FerrumTun {
         config.platform(|config| {
             config.packet_information(false);
         });
+        config.up();
         let devname = format!("ferrum{}", generate_random_string(8));
         config.name(devname.clone());
         let dev = tun::create_as_async(&config)?;
@@ -32,11 +32,14 @@ impl FerrumTun {
             stream: dev.into_framed(),
         })
     }
-    pub async fn read(self: &mut Self) -> Result<tun::TunPacket> {
+    pub async fn read(self: &mut Self) -> Result<Vec<u8>> {
         let res = self.stream.next().await;
         match res {
             None => Err(anyhow!("tun data is empty")),
-            Some(data) => Ok(data?),
+            Some(data) => match data {
+                Err(e) => Err(e.into()),
+                packet => Ok(packet.unwrap().get_bytes().to_vec()),
+            },
         }
     }
 

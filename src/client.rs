@@ -126,7 +126,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
 pub fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
 
-    roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+    roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -357,8 +357,8 @@ impl FerrumClient {
         let ctoken1 = cancel_token.clone();
 
         //input read
-        let mut reader = BufReader::with_capacity(2048, stdin);
-        let mut line = String::new();
+        let _reader = BufReader::with_capacity(2048, stdin);
+        let _line = String::new();
         //wait for ferrum_open
         let result = timeout(
             Duration::from_millis(5000),
@@ -396,7 +396,7 @@ impl FerrumClient {
         eprintln!("ferrum_tunnel_opened:{}", ftun.name.as_str());
 
         //output
-        let mut array: Vec<u8> = vec![0; 1024];
+        let mut array: Vec<u8> = vec![0; 1500];
         //let mut stdout = tokio::io::stderr();
 
         loop {
@@ -412,14 +412,19 @@ impl FerrumClient {
                         error!("tun read error {}", e);
                         break;
                     }
-                    let res=send.write_all(tunresp.unwrap().get_bytes()).await;
+                    let res=send.write_chunk(tunresp.unwrap().into()).await;
                     if let Err(e)= res{
-                        error!("tun read error {}", e);
+                        error!("send write error {}", e);
+                        break;
+                    }
+                    let res=send.flush().await;
+                    if let Err(e)= res{
+                        error!("send flush error {}", e);
                         break;
                     }
                 },
                 resp = recv
-                        .read(array.as_mut())=>{
+                        .read_chunk(array.as_mut())=>{
 
                     if let Err(e) = resp {
                         error!("stream read error {}", e);
