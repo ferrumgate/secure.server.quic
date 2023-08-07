@@ -5,6 +5,9 @@ mod common;
 #[path = "ferrum_tun.rs"]
 mod ferrum_tun;
 
+use anyhow::{anyhow, Error, Result};
+use bytes::BytesMut;
+use clap::Parser;
 use std::{
     borrow::BorrowMut,
     fs,
@@ -16,9 +19,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-
-use anyhow::{anyhow, Error, Result};
-use clap::Parser;
 
 use common::{get_log_level, handle_as_stdin};
 use ferrum_tun::FerrumTun;
@@ -200,7 +200,7 @@ impl FerrumClient {
 
         info!("connected at {:?}", start.elapsed());
         let (mut send, recv) = connection.open_bi().await?;
-        send.write(b"hello").await?;
+        send.write_all(b"hello").await?;
         if self.options.rebind {
             let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
             let addr = socket.local_addr().unwrap();
@@ -389,14 +389,16 @@ impl FerrumClient {
             return Err(anyhow!("ferrum protocol invalid"));
         }
 
-        let mut ftun = FerrumTun::new().map_err(|e| {
+        send.flush().await?;
+
+        let mut ftun = FerrumTun::new(4096).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;
-        eprintln!("ferrum_tunnel_opened:{}", ftun.name.as_str());
+        eprintln!("ferrum_tunnel_opened: {}", ftun.name.as_str());
 
         //output
-        let mut array: Vec<u8> = vec![0; 1500];
+        let array = &mut [0u8; 4096];
         //let mut stdout = tokio::io::stderr();
 
         loop {
@@ -406,50 +408,85 @@ impl FerrumClient {
                     warn!("cancelled");
                     break;
                 },
-                tunresp=ftun.read()=>{
-                    debug!("tun readed");
-                    if let Err(e) = tunresp {
-                        error!("tun read error {}", e);
-                        break;
-                    }
-                    let res=send.write_chunk(tunresp.unwrap().into()).await;
-                    if let Err(e)= res{
-                        error!("send write error {}", e);
-                        break;
-                    }
-                    let res=send.flush().await;
-                    if let Err(e)= res{
-                        error!("send flush error {}", e);
-                        break;
-                    }
-                },
-                resp = recv
-                        .read_chunk(array.as_mut())=>{
+                tunresp=ftun.read_frame()=>{
 
-                    if let Err(e) = resp {
-                        error!("stream read error {}", e);
-                        break;
-                    }
-
-                    debug!("stream received data");
-                    let response = resp.unwrap();
-                    match response {
-                        Some(0) => {
-                            info!("stream closed");
+                    match tunresp {
+                        Err(e) => {
+                            error!("tun read error {}", e);
                             break;
                         }
-                        Some(data) => {
-                            debug!("data received bytes {}", data);
-                            let res=ftun.write(&array[0..data]).await;
-                            //let res = stdout.write_all(&array[0..data]).await;
-                            if let Err(e) = res {
-                                error!("tun write failed {}", e);
+                        Ok(data)=>{
+                            debug!("readed from tun {} and streamed",data.data.len());
+                            let res=send.write_all(&data.data).await;
+                            if let Err(e)= res{
+                                error!("send write error {}", e);
                                 break;
                             }
                         }
-                        None => {
-                            info!("stream finished");
+                    }
+
+                },
+                resp = recv.read(array)=>{
+
+                    match resp{
+                        Err(e) => {
+                            error!("stream read error {}", e);
+
                             break;
+                        },
+                        Ok(response) =>{
+
+                            match response {
+                                Some(0) => {
+
+                                    info!("stream closed");
+                                    break;
+                                }
+                                Some(data) => {
+                                    debug!("data received from stream {}", data);
+                                    ftun.frame_bytes.extend_from_slice(&array[..data]);
+                                    debug!("remaining data len is {}",ftun.frame_bytes.len());
+                                    let mut break_loop=false;
+                                    loop{
+                                        let res_frame=ftun.parse_frame();
+                                        match res_frame {
+                                            Err(e) =>{
+                                                error!("tun parse frame failed {}", e);
+                                                break_loop=true;
+                                                break;
+                                            }
+                                            Ok(res_data)=>{
+                                                match res_data {
+                                                    None=> {
+                                                        break;
+                                                    },
+                                                    Some(res_data)=>{
+
+                                                        debug!("write tun packet size is: {}",res_data.data.len());
+                                                        let res=ftun.write(&res_data.data).await;
+                                                        match res{
+                                                            Err(e) => {
+                                                                error!("tun write failed {}", e);
+                                                                break_loop=true;
+                                                                break;
+                                                            },
+                                                            _=>{}
+                                                        }
+
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                 if break_loop {//error occured
+                                    break;
+                                 }
+                                }
+                                None => {
+                                    info!("stream finished");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
