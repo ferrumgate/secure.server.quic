@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use common::get_log_level;
-use server::{create_certs_chain, parse_config, FerrumServer, FerrumServerConfig, ServerOpt};
+use server::{create_certs_chain, FerrumServer};
 
 use tokio::select;
 use tokio::signal::{unix::signal, unix::SignalKind};
@@ -11,6 +11,82 @@ use tracing::{error, info};
 
 mod common;
 mod server;
+mod server_config;
+use server_config::FerrumServerConfig;
+
+#[derive(Parser, Debug)]
+#[clap(name = "server")]
+pub struct ServerOpt {
+    /// file to log TLS keys to for debugging
+    #[clap(long = "keylog")]
+    pub keylog: bool,
+
+    /// TLS private key in PEM format
+    #[clap(short = 'k', long = "key", requires = "cert")]
+    pub key: Option<PathBuf>,
+    /// TLS certificate in PEM format
+    #[clap(short = 'c', long = "cert", requires = "key")]
+    pub cert: Option<PathBuf>,
+    /// Enable stateless retries
+    #[clap(long = "stateless-retry")]
+    pub stateless_retry: bool,
+    /// Address to listen on
+    #[clap(long = "listen", default_value = "[::]:8443")]
+    pub listen: Option<String>,
+
+    #[clap(long = "port", default_value = "8443")]
+    pub port: u16,
+    #[clap(long = "stdinout")]
+    pub stdinout: bool,
+
+    #[clap(long = "loglevel", default_value = "info")]
+    pub loglevel: String,
+    #[clap(long = "gateway_id", default_value = "gateway_id")]
+    pub gateway_id: String,
+    #[clap(long = "redis_host", default_value = "localhost:6379")]
+    pub redis_host: String,
+    #[clap(long = "redis_user")]
+    pub redis_user: Option<String>,
+    #[clap(long = "redis_pass")]
+    pub redis_pass: Option<String>,
+}
+
+#[allow(unused)]
+pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
+    let mut ip = "".to_owned();
+    match opt.listen {
+        None => {
+            ip.push_str("[::]");
+            let port_str = format!(":{}", opt.port);
+            ip.push_str(port_str.as_str());
+        }
+        Some(x) => ip = x.clone(),
+    }
+
+    let mut sockaddr = ip.to_socket_addrs()?;
+    let sockaddr_v = sockaddr.next();
+    if sockaddr_v.is_none() {
+        return Err(anyhow!("could not parse listen"));
+    }
+    let sockaddrs = sockaddr_v.unwrap();
+
+    let config: FerrumServerConfig = FerrumServerConfig {
+        listen: sockaddrs,
+        ip: ip.clone(),
+        stdinout: opt.stdinout,
+        loglevel: opt.loglevel,
+        cert: opt.cert,
+        key: opt.key,
+        keylog: opt.keylog,
+        connect_timeout: 3000,
+        idle_timeout: 15000,
+        gateway_id: opt.gateway_id,
+        redis_host: opt.redis_host,
+        redis_pass: opt.redis_pass,
+        redis_user: opt.redis_user,
+    };
+    Ok(config)
+}
 
 #[allow(dead_code)]
 

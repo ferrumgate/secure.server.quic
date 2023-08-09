@@ -1,9 +1,15 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
+#[path = "client_config.rs"]
+mod client_config;
+
 #[path = "common.rs"]
 mod common;
 #[path = "ferrum_tun.rs"]
 mod ferrum_tun;
+
+#[path = "ferrum_proto.rs"]
+mod ferrum_proto;
 
 use anyhow::{anyhow, Error, Result};
 use bytes::BytesMut;
@@ -20,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use client_config::FerrumClientConfig;
 use common::{get_log_level, handle_as_stdin};
 use ferrum_tun::FerrumTun;
 use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
@@ -34,71 +41,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
 
-pub struct FerrumClientConfig {
-    pub host: String,
-    pub host_port: String,
-    pub ip: SocketAddr,
-    pub ca: Option<PathBuf>,
-    pub keylog: bool,
-    pub rebind: bool,
-    pub insecure: bool,
-    pub stdinout: bool,
-    pub loglevel: String,
-    pub idle_timeout: u32,
-    pub connect_timeout: u64,
-}
+use crate::client::ferrum_proto::FerrumProto;
 
-#[derive(Parser, Debug)]
-#[clap(name = "client")]
-pub struct ClientConfigOpt {
-    /// Perform NSS-compatible TLS key logging to the file specified in `SSLKEYLOGFILE`.
-    #[clap(long = "keylog")]
-    pub keylog: bool,
-
-    #[clap(long = "insecure")]
-    pub insecure: bool,
-
-    #[clap(long = "host", default_value = "localhost:8443")]
-    pub host: String,
-
-    /// Custom certificate authority to trust, in DER format
-    #[clap(long = "ca")]
-    pub ca: Option<PathBuf>,
-
-    /// Simulate NAT rebinding after connecting
-    #[clap(long = "rebind")]
-    pub rebind: bool,
-    #[clap(long = "stdinout")]
-    pub stdinout: bool,
-    #[clap(long = "loglevel", default_value = "info")]
-    pub loglevel: String,
-}
-#[allow(unused)]
-pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
-    let mut abc = opt.host.to_socket_addrs()?;
-    let ip = abc.next();
-    if ip.is_none() {
-        return Err(anyhow!("not resolved"));
-    }
-    let sockaddr = ip.unwrap();
-    let just_hostname: Vec<_> = opt.host.split(":").collect();
-    //let port = sockaddr.port();
-    let config: FerrumClientConfig = FerrumClientConfig {
-        host: just_hostname[0].to_string(),
-        host_port: opt.host,
-        ip: sockaddr,
-        ca: opt.ca,
-        keylog: opt.keylog,
-        rebind: opt.rebind,
-        insecure: opt.insecure,
-        stdinout: opt.stdinout,
-        loglevel: opt.loglevel.clone(),
-        connect_timeout: 3000,
-        idle_timeout: 15000,
-    };
-
-    Ok(config)
-}
+use self::ferrum_proto::FerrumFrame;
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
 struct SkipServerVerification;
@@ -141,9 +86,13 @@ pub fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
 }
 
 pub struct FerrumClient {
+    read_buf: Vec<u8>,
     options: FerrumClientConfig,
     crypto: rustls::client::ClientConfig,
     connection: Option<quinn::Connection>,
+    read_stream: Option<quinn::RecvStream>,
+    write_stream: Option<quinn::SendStream>,
+    proto: Option<FerrumProto>,
 }
 impl FerrumClient {
     pub fn new(options: FerrumClientConfig, certs: RootCertStore) -> Self {
@@ -154,6 +103,10 @@ impl FerrumClient {
                 .with_root_certificates(certs)
                 .with_no_client_auth(),
             connection: None,
+            read_stream: None,
+            write_stream: None,
+            proto: None,
+            read_buf: vec![0; 1024],
         };
 
         if client.options.insecure {
@@ -170,7 +123,7 @@ impl FerrumClient {
         client
     }
 
-    async fn internal_connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+    async fn internal_connect(&mut self) -> Result<()> {
         let crypto = self.crypto.clone();
         let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
         let mut transport_config = TransportConfig::default();
@@ -200,7 +153,9 @@ impl FerrumClient {
 
         info!("connected at {:?}", start.elapsed());
         let (mut send, recv) = connection.open_bi().await?;
-        send.write_all(b"hello").await?;
+        let protocol = FerrumProto::new(32);
+        let frame = protocol.encode_frame_str("hello")?; //write hello to server for protocol
+        send.write_all(&frame.data).await?;
         if self.options.rebind {
             let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
             let addr = socket.local_addr().unwrap();
@@ -208,11 +163,15 @@ impl FerrumClient {
             endpoint.rebind(socket).expect("rebind failed");
         }
         self.connection = Some(connection);
+
+        self.read_stream = Some(recv);
+        self.write_stream = Some(send);
+        self.proto = Some(protocol);
         info!("stream opened");
-        Ok((send, recv))
+        Ok(())
     }
 
-    pub async fn connect(&mut self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+    pub async fn connect(&mut self) -> Result<()> {
         let result = timeout(
             Duration::from_millis(self.options.connect_timeout),
             self.internal_connect(),
@@ -232,23 +191,19 @@ impl FerrumClient {
         create_root_certs(config)
     }
 
-    pub async fn process(
-        &mut self,
-        send: SendStream,
-        recv: RecvStream,
-        cancel_token: CancellationToken,
-    ) -> Result<()> {
+    pub async fn process(&mut self, cancel_token: CancellationToken) -> Result<()> {
         if self.options.stdinout {
-            handle_as_stdin(send, recv, cancel_token).await
+            handle_as_stdin(
+                self.write_stream.as_mut().unwrap(),
+                self.read_stream.as_mut().unwrap(),
+                &cancel_token,
+            )
+            .await
         } else {
-            self.handle_client(send, recv, cancel_token).await
+            self.handle_client(cancel_token).await
         }
     }
-    pub async fn handle_open(
-        self: &mut Self,
-        recv: &mut RecvStream,
-        cancel_token: CancellationToken,
-    ) -> Result<String> {
+    pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
         let mut array: Vec<u8> = vec![0; 1024];
         let mut stdout = tokio::io::stderr();
         select! {
@@ -257,7 +212,7 @@ impl FerrumClient {
                 return Err(anyhow!("cancelled"));
             },
 
-            resp = recv
+            resp = self.read_stream.as_mut().unwrap()
                     .read(array.as_mut())=>{
 
                 if let Err(e) = resp {
@@ -295,10 +250,9 @@ impl FerrumClient {
         }
     }
 
-    pub async fn handle_open_confirmed(
+    async fn handle_open_confirmed(
         self: &mut Self,
-        recv: &mut RecvStream,
-        cancel_token: CancellationToken,
+        cancel_token: &CancellationToken,
     ) -> Result<String> {
         let mut array: Vec<u8> = vec![0; 1024];
         let mut stdout = tokio::io::stderr();
@@ -308,7 +262,7 @@ impl FerrumClient {
                 return Err(anyhow!("cancelled"));
             },
 
-            resp = recv
+            resp = self.read_stream.as_mut().unwrap()
                     .read(array.as_mut())=>{
 
                 if let Err(e) = resp {
@@ -347,22 +301,14 @@ impl FerrumClient {
     }
 
     #[allow(dead_code)]
-    pub async fn handle_client(
-        self: &mut Self,
-        mut send: SendStream,
-        mut recv: RecvStream,
-        cancel_token: CancellationToken,
-    ) -> Result<()> {
+    async fn handle_client(self: &mut Self, cancel_token: CancellationToken) -> Result<()> {
         let stdin = tokio::io::stdin();
         let ctoken1 = cancel_token.clone();
 
-        //input read
-        let _reader = BufReader::with_capacity(2048, stdin);
-        let _line = String::new();
         //wait for ferrum_open
         let result = timeout(
             Duration::from_millis(5000),
-            self.handle_open(&mut recv, cancel_token.clone()),
+            self.handle_open(cancel_token.clone()),
         )
         .await?;
         if let Err(e) = result {
@@ -377,7 +323,7 @@ impl FerrumClient {
         //wait for ferrum_confirm
         let result = timeout(
             Duration::from_millis(90000),
-            self.handle_open_confirmed(&mut recv, cancel_token.clone()),
+            self.handle_open_confirmed(&cancel_token.clone()),
         )
         .await?;
         if let Err(e) = result {
@@ -388,8 +334,6 @@ impl FerrumClient {
             error!("waits for ferrum_open");
             return Err(anyhow!("ferrum protocol invalid"));
         }
-
-        send.flush().await?;
 
         let mut ftun = FerrumTun::new(4096).map_err(|e| {
             error!("tun create failed: {}", e);
@@ -408,7 +352,7 @@ impl FerrumClient {
                     warn!("cancelled");
                     break;
                 },
-                tunresp=ftun.read_frame()=>{
+                tunresp=ftun.read()=>{
 
                     match tunresp {
                         Err(e) => {
@@ -417,7 +361,7 @@ impl FerrumClient {
                         }
                         Ok(data)=>{
                             debug!("readed from tun {} and streamed",data.data.len());
-                            let res=send.write_all(&data.data).await;
+                            let res=self.write_stream.as_mut().unwrap().write_all(&data.data).await;
                             if let Err(e)= res{
                                 error!("send write error {}", e);
                                 break;
@@ -426,7 +370,7 @@ impl FerrumClient {
                     }
 
                 },
-                resp = recv.read(array)=>{
+                resp = self.read_stream.as_mut().unwrap().read(array)=>{
 
                     match resp{
                         Err(e) => {
@@ -447,8 +391,8 @@ impl FerrumClient {
                                     ftun.frame_bytes.extend_from_slice(&array[..data]);
                                     debug!("remaining data len is {}",ftun.frame_bytes.len());
                                     let mut break_loop=false;
-                                    loop{
-                                        let res_frame=ftun.parse_frame();
+                                    /* loop{
+                                        let res_frame=ftun.read();
                                         match res_frame {
                                             Err(e) =>{
                                                 error!("tun parse frame failed {}", e);
@@ -477,7 +421,7 @@ impl FerrumClient {
                                                 }
                                             }
                                         }
-                                    }
+                                    } */
                                  if break_loop {//error occured
                                     break;
                                  }
@@ -511,31 +455,6 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-
-    #[test]
-    fn test_parse_config() {
-        let opt: ClientConfigOpt = ClientConfigOpt {
-            keylog: false,
-            host: String::from("localhost:543"),
-            ca: None,
-            rebind: true,
-            insecure: true,
-            stdinout: false,
-            loglevel: "debug".to_string(),
-        };
-
-        let config_result1 = parse_config(opt);
-        assert_eq!(config_result1.is_err(), false);
-        let config1 = config_result1.unwrap();
-        assert_eq!(config1.host_port, "localhost:543");
-        assert_eq!(config1.host, "localhost");
-        assert_eq!(config1.ip, "127.0.0.1:543".parse().unwrap());
-        assert_eq!(config1.ca, None);
-        assert_eq!(
-            config1.ip,
-            "localhost:543".to_socket_addrs().unwrap().next().unwrap()
-        );
-    }
 
     #[test]
     fn test_create_root_certs() {

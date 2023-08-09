@@ -41,7 +41,7 @@ impl FerrumTun {
             stream: dev.into_framed(),
         })
     }
-    pub async fn read_frame(self: &mut Self) -> Result<FerrumTunFrame> {
+    pub async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
         let res = self.stream.next().await;
         match res {
             None => Err(anyhow!("tun data is empty")),
@@ -50,46 +50,13 @@ impl FerrumTun {
                 packet => {
                     let packet_data = packet.unwrap();
                     let packet_bytes = packet_data.get_bytes();
-                    let packet_bytes_len = packet_bytes.len();
-                    let bytes_len_bytes =
-                        u16::try_from(packet_bytes_len).ok().unwrap().to_be_bytes();
 
-                    let mut d = BytesMut::with_capacity(packet_bytes_len + bytes_len_bytes.len());
-                    d.extend_from_slice(bytes_len_bytes.as_slice());
+                    let mut d = BytesMut::with_capacity(packet_bytes.len());
                     d.extend_from_slice(packet_bytes);
                     Ok(FerrumTunFrame { data: d })
                 }
             },
         }
-    }
-
-    pub fn parse_frame(self: &mut Self) -> Result<Option<FerrumTunFrame>> {
-        let mut buf = &mut self.frame_bytes;
-        debug!("read frame buf len {}", buf.len());
-        let mut lenu = 0;
-        if self.frame_wait_len == 0 {
-            if buf.len() < 2 {
-                return Ok(None);
-            }
-
-            let len = buf.get_u16();
-            if len == 0 {
-                debug!("read frame total len {}", len);
-                return Ok(None);
-            }
-            lenu = usize::from(len);
-        } else {
-            lenu = self.frame_wait_len;
-        }
-        if buf.len() < lenu {
-            debug!("read frame total len is smaller {}< {}", lenu, buf.len());
-            return Ok(None);
-        }
-        let p = buf.split_to(lenu);
-        debug!("read frame buf splitted len {}", p.len());
-        self.frame_wait_len = 0;
-        let data = Some(FerrumTunFrame { data: p });
-        Ok(data)
     }
 
     pub async fn write(self: &mut Self, buf: &[u8]) -> Result<(), std::io::Error> {

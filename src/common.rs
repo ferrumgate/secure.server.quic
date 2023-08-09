@@ -104,84 +104,80 @@ pub fn generate_random_string(len: usize) -> String {
 
 #[allow(dead_code)]
 pub async fn handle_as_stdin(
-    mut send: SendStream,
-    mut recv: RecvStream,
-    cancel_token: CancellationToken,
+    mut send: &mut SendStream,
+    mut recv: &mut RecvStream,
+    cancel_token: &CancellationToken,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let ctoken1 = cancel_token.clone();
-    let task = tokio::spawn(async move {
-        //input read
-        let mut reader = BufReader::with_capacity(2048, stdin);
-        let mut line = String::new();
-        //output
-        let mut array: Vec<u8> = vec![0; 1024];
-        let mut stdout = tokio::io::stdout();
 
-        loop {
-            debug!("waiting for input");
-            select! {
-                _=ctoken1.cancelled()=>{
-                    warn!("cancelled");
-                    break;
-                },
-                result=reader.read_line(&mut line)=>{
-                    match result {
-                        Err(e) => {
-                            error!("recv read failed {}", e);
-                            break;
-                        }
-                        Ok(0) => {
-                            warn!("stdin finished");
-                            break;
-                        }
-                        Ok(b) => {
-                            debug!("data sended bytes {}", b);
-                            let res = send
-                                .write_all(line.as_bytes())
-                                .await
-                                .map_err(|e| anyhow!("failed to send input:{}", e));
-                            if res.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                },
-                resp = recv
-                        .read(array.as_mut())=>{
+    //input read
+    let mut reader = BufReader::with_capacity(2048, stdin);
+    let mut line = String::new();
+    //output
+    let mut array: Vec<u8> = vec![0; 1024];
+    let mut stdout = tokio::io::stdout();
 
-                    if let Err(e) = resp {
-                        error!("stream read error {}", e);
+    loop {
+        debug!("waiting for input");
+        select! {
+            _=ctoken1.cancelled()=>{
+                warn!("cancelled");
+                break;
+            },
+            result=reader.read_line(&mut line)=>{
+                match result {
+                    Err(e) => {
+                        error!("recv read failed {}", e);
                         break;
                     }
-
-                    debug!("received data");
-                    let response = resp.unwrap();
-                    match response {
-                        Some(0) => {
-                            info!("stream closed");
-                            break;
-                        }
-                        Some(data) => {
-                            debug!("data received bytes {}", data);
-                            let res = stdout.write_all(&array[0..data]).await;
-                            if let Err(e) = res {
-                                error!("stdout write failed {}", e);
-                                break;
-                            }
-                        }
-                        None => {
-                            info!("stream finished");
+                    Ok(0) => {
+                        warn!("stdin finished");
+                        break;
+                    }
+                    Ok(b) => {
+                        debug!("data sended bytes {}", b);
+                        let res = send
+                            .write_all(line.as_bytes())
+                            .await
+                            .map_err(|e| anyhow!("failed to send input:{}", e));
+                        if res.is_err() {
                             break;
                         }
                     }
                 }
+            },
+            resp = recv
+                    .read(array.as_mut())=>{
+
+                if let Err(e) = resp {
+                    error!("stream read error {}", e);
+                    break;
+                }
+
+                debug!("received data");
+                let response = resp.unwrap();
+                match response {
+                    Some(0) => {
+                        info!("stream closed");
+                        break;
+                    }
+                    Some(data) => {
+                        debug!("data received bytes {}", data);
+                        let res = stdout.write_all(&array[0..data]).await;
+                        if let Err(e) = res {
+                            error!("stdout write failed {}", e);
+                            break;
+                        }
+                    }
+                    None => {
+                        info!("stream finished");
+                        break;
+                    }
+                }
             }
         }
-    });
-
-    let _ = tokio::join!(task);
-
+    }
     let _ = tokio::io::stdout().flush().await;
 
     //debug!("connection closed");

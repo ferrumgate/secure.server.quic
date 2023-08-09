@@ -1,15 +1,18 @@
-//! This example demonstrates an HTTP server that serves files from a directory.
-//!
-//! Checkout the `README.md` for guidance.
-
 #[path = "common.rs"]
 mod common;
-
 #[path = "ferrum_tun.rs"]
 mod ferrum_tun;
-
 #[path = "redis_client.rs"]
 mod redis_client;
+
+#[path = "ferrum_proto.rs"]
+mod ferrum_proto;
+
+#[path = "ferrum_stream.rs"]
+mod ferrum_stream;
+
+#[path = "server_config.rs"]
+mod server_config;
 
 use std::{
     fs,
@@ -28,109 +31,38 @@ use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 use rustls::{Certificate, PrivateKey};
 
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
+use ferrum_proto::{FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto};
+use ferrum_stream::FerrumStream;
 use ferrum_tun::FerrumTun;
+use server_config::FerrumServerConfig;
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-pub struct FerrumServerConfig {
-    pub listen: SocketAddr,
-    pub ip: String,
-    pub stdinout: bool,
-    pub loglevel: String,
-    pub keylog: bool,
-    pub key: Option<PathBuf>,
-    pub cert: Option<PathBuf>,
-    pub connect_timeout: u64,
-    pub idle_timeout: u32,
-    pub gateway_id: String,
-    pub redis_host: String,
-    pub redis_user: Option<String>,
-    pub redis_pass: Option<String>,
-}
-
-#[derive(Parser, Debug)]
-#[clap(name = "server")]
-pub struct ServerOpt {
-    /// file to log TLS keys to for debugging
-    #[clap(long = "keylog")]
-    pub keylog: bool,
-
-    /// TLS private key in PEM format
-    #[clap(short = 'k', long = "key", requires = "cert")]
-    pub key: Option<PathBuf>,
-    /// TLS certificate in PEM format
-    #[clap(short = 'c', long = "cert", requires = "key")]
-    pub cert: Option<PathBuf>,
-    /// Enable stateless retries
-    #[clap(long = "stateless-retry")]
-    pub stateless_retry: bool,
-    /// Address to listen on
-    #[clap(long = "listen", default_value = "[::]:8443")]
-    pub listen: Option<String>,
-
-    #[clap(long = "port", default_value = "8443")]
-    pub port: u16,
-    #[clap(long = "stdinout")]
-    pub stdinout: bool,
-
-    #[clap(long = "loglevel", default_value = "info")]
-    pub loglevel: String,
-    #[clap(long = "gateway_id", default_value = "gateway_id")]
-    pub gateway_id: String,
-    #[clap(long = "redis_host", default_value = "localhost:6379")]
-    pub redis_host: String,
-    #[clap(long = "redis_user")]
-    pub redis_user: Option<String>,
-    #[clap(long = "redis_pass")]
-    pub redis_pass: Option<String>,
-}
-
-#[allow(unused)]
-pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
-    let mut ip = "".to_owned();
-    match opt.listen {
-        None => {
-            ip.push_str("[::]");
-            let port_str = format!(":{}", opt.port);
-            ip.push_str(port_str.as_str());
-        }
-        Some(x) => ip = x.clone(),
-    }
-
-    let mut sockaddr = ip.to_socket_addrs()?;
-    let sockaddr_v = sockaddr.next();
-    if sockaddr_v.is_none() {
-        return Err(anyhow!("could not parse listen"));
-    }
-    let sockaddrs = sockaddr_v.unwrap();
-
-    let config: FerrumServerConfig = FerrumServerConfig {
-        listen: sockaddrs,
-        ip: ip.clone(),
-        stdinout: opt.stdinout,
-        loglevel: opt.loglevel,
-        cert: opt.cert,
-        key: opt.key,
-        keylog: opt.keylog,
-        connect_timeout: 3000,
-        idle_timeout: 15000,
-        gateway_id: opt.gateway_id,
-        redis_host: opt.redis_host,
-        redis_pass: opt.redis_pass,
-        redis_user: opt.redis_user,
-    };
-    Ok(config)
-}
-
-pub struct ClientData {
+pub struct FerrumClient {
+    read_buf: Vec<u8>,
     client_ip: String,
     redis_host: String,
     redis_user: Option<String>,
     redis_pass: Option<String>,
     gateway_id: String,
+    read_stream: Option<quinn::RecvStream>,
+    write_stream: Option<quinn::SendStream>,
+    proto: Option<FerrumProto>,
+    connection: Option<quinn::Connection>,
+}
+impl FerrumClient {
+    pub fn close(&mut self) {
+        if self.connection.is_some() {
+            self.connection
+                .as_mut()
+                .unwrap()
+                .close(0u32.into(), b"done");
+        }
+        self.connection = None;
+    }
 }
 
 pub struct FerrumServerCertChain {
@@ -138,7 +70,7 @@ pub struct FerrumServerCertChain {
     key: PrivateKey,
 }
 
-pub fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
+fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
         let key = if key_path.extension().map_or(false, |x| x == "der") {
@@ -229,68 +161,134 @@ impl FerrumServer {
         })
     }
 
+    #[allow(unused)]
+    pub fn create_server_cert_chain(option: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
+        create_certs_chain(option)
+    }
+
+    pub async fn listen(self: &Self, cancel_token: CancellationToken) {
+        info!("starting listening on {}", self.options.listen);
+        let is_stdin_out = self.options.stdinout;
+        let cancel_token = cancel_token.clone();
+
+        while let Some(conn) = select! {
+            conn=self.endpoint.accept()=>{conn},
+            _=cancel_token.cancelled()=>{None}
+        } {
+            let mut client = FerrumClient {
+                client_ip: conn.remote_address().to_string(),
+                redis_host: self.options.redis_host.clone(),
+                redis_user: self.options.redis_user.clone(),
+                redis_pass: self.options.redis_pass.clone(),
+                gateway_id: self.options.gateway_id.clone(),
+                proto: None,
+                read_stream: None,
+                write_stream: None,
+                connection: None,
+                read_buf: Vec::with_capacity(1024),
+            };
+            //TODO!("check from rate limit list");
+            debug!("connection incoming");
+            let fut = timeout(
+                Duration::from_millis(self.options.connect_timeout),
+                FerrumServer::handle_connection(conn),
+            );
+
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                let res = fut.await;
+                match res {
+                    Err(err) => {
+                        //TODO("add to rate limit list");
+                        error!("timeout occured {}", err);
+                    }
+                    Ok(res2) => match res2 {
+                        Err(err) => {
+                            //TODO!("add to rate limit list");
+                            error!("connection failed: {reason}", reason = err.to_string())
+                        }
+                        Ok((mut send, mut recv, conn)) => {
+                            if is_stdin_out {
+                                let _ = handle_as_stdin(&mut send, &mut recv, &cancel_token).await;
+                                conn.close(0u32.into(), b"done");
+                            } else {
+                                client.proto = Some(FerrumProto::new(1600));
+                                client.read_stream = Some(recv);
+                                client.write_stream = Some(send);
+                                client.connection = Some(conn);
+
+                                let _ = FerrumServer::handle_client(client, cancel_token).await;
+                                client.close();
+                            }
+                        }
+                    },
+                }
+            });
+        }
+    }
     async fn handle_connection(
         conn: quinn::Connecting,
     ) -> Result<(SendStream, RecvStream, Connection)> {
         let connection = conn.await?;
-        /*  info!(
-            "connection remote: {} {}",
-            connection.remote_address(),
-            connection
-                .handshake_data()
-                .unwrap()
-                .downcast::<quinn::crypto::rustls::HandshakeData>()
-                .unwrap()
-                .protocol
-                .map_or_else(
-                    || "<none>".into(),
-                    |x| String::from_utf8_lossy(&x).into_owned()
-                )
-        ); */
 
         info!("established {}", connection.remote_address());
 
         // Each stream initiated by the client constitutes a new request.
 
         let (send, mut recv) = connection.accept_bi().await?;
-        let mut readed_len = 5;
-        loop {
-            let array = &mut [0u8, 16];
-            let result = recv.read(array).await?; //read hello message
-            match result {
-                Some(a) => {
-                    readed_len -= a;
-                    if readed_len == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
         info!("stream opened {}", connection.remote_address());
         Ok((send, recv, connection))
-    }
-    #[allow(unused)]
-    pub fn create_server_cert_chain(option: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
-        create_certs_chain(option)
     }
 
     #[allow(dead_code)]
     pub async fn handle_client(
-        cd: ClientData,
-        mut send: SendStream,
-        mut recv: RecvStream,
+        client: FerrumClient,
         cancel_token: CancellationToken,
     ) -> Result<()> {
-        let _stdin = tokio::io::stdin();
+        let hello_msg = timeout(
+            Duration::from_millis(5000),
+            FerrumStream::read_next_frame(
+                client.read_buf.as_mut(),
+                client.proto.as_mut().unwrap(),
+                client.read_stream.as_mut().unwrap(),
+                &cancel_token,
+            ),
+        )
+        .await
+        .map_err(|err| {
+            error!("hello msg timeout {}", err);
+            err
+        })?;
+        let hello_msg = hello_msg.map_err(|err| {
+            error!("parsing error");
+            err
+        })?;
+        match hello_msg {
+            FerrumFrame::FrameNone => {
+                error!("protocol error");
+                return Err(anyhow!("protocol error"));
+            }
+            FerrumFrame::FrameBytes(a) => {
+                error!("protocol error");
+                return Err(anyhow!("protocol error"));
+            }
+            FerrumFrame::FrameStr(a) => {
+                if a.data != "hello" {
+                    error!("protocol error");
+                    return Err(anyhow!("protocol error"));
+                }
+            }
+        }
+
+        //let _stdin = tokio::io::stdin();
         let ctoken1 = cancel_token.clone();
+
         //this block is important for droping
         {
             let mut redis = RedisClient::new(
-                cd.redis_host.as_str(),
-                cd.redis_user.clone(),
-                cd.redis_pass.clone(),
+                client.redis_host.as_str(),
+                client.redis_user.clone(),
+                client.redis_pass.clone(),
             );
             let _ = redis.connect().await.map_err(|err| {
                 error!("connecting to redis failed {}", err);
@@ -301,12 +299,22 @@ impl FerrumServer {
             redis
                 .execute(
                     tunnel.as_str(),
-                    cd.client_ip.as_str(),
-                    cd.gateway_id.as_str(),
+                    client.client_ip.as_str(),
+                    client.gateway_id.as_str(),
                     300000,
                 )
                 .await?;
-            send.write_all(format!("ferrum_open:tunnel= {}\n", tunnel).as_bytes())
+            let frame = client
+                .proto
+                .as_ref()
+                .unwrap()
+                .encode_frame_str(format!("ferrum_open:tunnel= {}\n", tunnel).as_str())?;
+
+            client
+                .write_stream
+                .as_mut()
+                .unwrap()
+                .write_all(&frame.data)
                 .await?;
             let _res = redis
                 .subscribe(
@@ -315,19 +323,29 @@ impl FerrumServer {
                 )
                 .await?;
             if _res != "ok:" {
-                error!("could not authenticate {}", cd.client_ip)
+                error!("could not authenticate {}", client.client_ip)
             }
         }
-        debug!("authentication completed for {}", cd.client_ip);
+        debug!("authentication completed for {}", client.client_ip);
         let mut ftun = FerrumTun::new(2000).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;
         info!("tun opened: {}", ftun.name);
 
-        send.write_all(format!("ferrum_tunnel_confirmed:\n").as_bytes())
+        let frame = client
+            .proto
+            .as_ref()
+            .unwrap()
+            .encode_frame_str("ferrum_tunnel_confirmed:\n")?;
+
+        client
+            .write_stream
+            .as_mut()
+            .unwrap()
+            .write_all(&frame.data)
             .await?;
-        send.flush().await?;
+
         //output
 
         let array = &mut [0u8; 1024];
@@ -434,61 +452,6 @@ impl FerrumServer {
         Ok(())
     }
 
-    pub async fn listen(self: &Self, cancel_token: CancellationToken) {
-        info!("starting listening on {}", self.options.listen);
-        let is_stdin_out = self.options.stdinout;
-        let cancel_token = cancel_token.clone();
-
-        while let Some(conn) = select! {
-            conn=self.endpoint.accept()=>{conn},
-            _=cancel_token.cancelled()=>{None}
-        } {
-            let client_data = ClientData {
-                client_ip: conn.remote_address().to_string(),
-                redis_host: self.options.redis_host.clone(),
-                redis_user: self.options.redis_user.clone(),
-                redis_pass: self.options.redis_pass.clone(),
-                gateway_id: self.options.gateway_id.clone(),
-            };
-            //TODO!("check from rate limit list");
-            debug!("connection incoming");
-            let fut = timeout(
-                Duration::from_millis(self.options.connect_timeout),
-                FerrumServer::handle_connection(conn),
-            );
-
-            let cancel_token = cancel_token.clone();
-            tokio::spawn(async move {
-                let res = fut.await;
-                match res {
-                    Err(err) => {
-                        //TODO("add to rate limit list");
-                        error!("timeout occured {}", err);
-                    }
-                    Ok(res2) => match res2 {
-                        Err(err) => {
-                            //TODO!("add to rate limit list");
-                            error!("connection failed: {reason}", reason = err.to_string())
-                        }
-                        Ok((send, recv, conn)) => {
-                            if is_stdin_out {
-                                let _ = handle_as_stdin(send, recv, cancel_token).await;
-                            } else {
-                                let _ = FerrumServer::handle_client(
-                                    client_data,
-                                    send,
-                                    recv,
-                                    cancel_token,
-                                )
-                                .await;
-                            }
-                            conn.close(0u32.into(), b"done");
-                        }
-                    },
-                }
-            });
-        }
-    }
     #[allow(unused)]
     pub fn close(self: &Self) {
         self.endpoint.wait_idle();
