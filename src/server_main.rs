@@ -1,7 +1,20 @@
-use anyhow::Result;
+use std::{
+    borrow::BorrowMut,
+    fs,
+    io::{self, Write},
+    net::{SocketAddr, ToSocketAddrs},
+    ops::Deref,
+    path::PathBuf,
+    str,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use anyhow::{anyhow, Error, Result};
+use bytes::BytesMut;
 use clap::Parser;
 use common::get_log_level;
-use server::{create_certs_chain, FerrumServer};
+use server::FerrumServer;
 
 use tokio::select;
 use tokio::signal::{unix::signal, unix::SignalKind};
@@ -11,8 +24,7 @@ use tracing::{error, info};
 
 mod common;
 mod server;
-mod server_config;
-use server_config::FerrumServerConfig;
+use server::FerrumServerConfig;
 
 #[derive(Parser, Debug)]
 #[clap(name = "server")]
@@ -124,7 +136,7 @@ fn main() {
 
 #[allow(dead_code)]
 async fn run(options: FerrumServerConfig) -> Result<()> {
-    let cert_chain = create_certs_chain(&options)
+    let cert_chain = FerrumServer::create_server_cert_chain(&options)
         .map_err(|e| error!("create certs failed {}", e))
         .unwrap();
 

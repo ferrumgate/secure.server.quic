@@ -5,9 +5,6 @@ mod ferrum_tun;
 #[path = "redis_client.rs"]
 mod redis_client;
 
-#[path = "ferrum_proto.rs"]
-mod ferrum_proto;
-
 #[path = "ferrum_stream.rs"]
 mod ferrum_stream;
 
@@ -26,15 +23,17 @@ use anyhow::{anyhow, Context, Result};
 use bytes::BytesMut;
 use clap::Parser;
 use common::handle_as_stdin;
+
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 
 use rustls::{Certificate, PrivateKey};
 
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
-use ferrum_proto::{FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto};
-use ferrum_stream::FerrumStream;
+
+use ferrum_stream::{FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumStream};
 use ferrum_tun::FerrumTun;
-use server_config::FerrumServerConfig;
+
+pub use server_config::FerrumServerConfig;
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::time::timeout;
@@ -217,7 +216,8 @@ impl FerrumServer {
                                 client.write_stream = Some(send);
                                 client.connection = Some(conn);
 
-                                let _ = FerrumServer::handle_client(client, cancel_token).await;
+                                let _ =
+                                    FerrumServer::handle_client(&mut client, cancel_token).await;
                                 client.close();
                             }
                         }
@@ -242,7 +242,7 @@ impl FerrumServer {
 
     #[allow(dead_code)]
     pub async fn handle_client(
-        client: FerrumClient,
+        client: &mut FerrumClient,
         cancel_token: CancellationToken,
     ) -> Result<()> {
         let hello_msg = timeout(
@@ -359,7 +359,7 @@ impl FerrumServer {
                     warn!("cancelled");
                     break;
                 },
-                tunresp=ftun.read_frame()=>{
+             /*    tunresp=ftun.read_frame()=>{
 
                     match tunresp {
                         Err(e) => {
@@ -442,6 +442,7 @@ impl FerrumServer {
                         }
                     }
                 }
+            */
             }
         }
 

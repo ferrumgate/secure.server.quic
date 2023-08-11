@@ -1,11 +1,24 @@
 mod client;
-mod client_config;
 mod common;
 
-use anyhow::Result;
+use std::{
+    borrow::BorrowMut,
+    fs,
+    io::{self, Write},
+    net::{SocketAddr, ToSocketAddrs},
+    ops::Deref,
+    path::PathBuf,
+    str,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use anyhow::{anyhow, Error, Result};
+use bytes::BytesMut;
 use clap::Parser;
-use client::{create_root_certs, FerrumClient};
-use client_config::FerrumClientConfig;
+
+use client::{FerrumClient, FerrumClientConfig};
+
 use common::get_log_level;
 
 use tokio::{select, signal};
@@ -104,7 +117,7 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
     eprintln!("ferrum_pid:{}", process_id);
     let remote = options.ip;
     info!("connecting to {}", remote);
-    let roots = FerrumClientConfig::create_root_certs(&options)?;
+    let roots = FerrumClient::create_root_certs(&options)?;
 
     let mut client: FerrumClient = FerrumClient::new(options, roots);
     let result = client.connect().await.map_err(|err| {

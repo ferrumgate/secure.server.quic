@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Ok, Result};
-use common::generate_random_string;
+
 use futures::{SinkExt, StreamExt};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -8,9 +8,8 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
 
-#[path = "common.rs"]
-mod common;
-
+pub const FERRUM_FRAME_STR_TYPE: u8 = 0x1;
+pub const FERRUM_FRAME_BYTES_TYPE: u8 = 0x2;
 pub struct FerrumProto {
     read_data: BytesMut,
     read_data_wait_len: usize,
@@ -28,7 +27,7 @@ pub enum FerrumFrame {
     FrameStr(FerrumFrameStr),
     FrameBytes(FerrumFrameBytes),
 }
-use FerrumFrame::{FrameBytes, FrameNone, FrameStr};
+pub use FerrumFrame::{FrameBytes, FrameNone, FrameStr};
 
 impl FerrumProto {
     pub fn new(buf_size: usize) -> Self {
@@ -54,7 +53,7 @@ impl FerrumProto {
         match self.read_data_wait_len {
             //emptyp string and empty array
             0 => match self.read_data_type {
-                1 => Ok(FrameStr(FerrumFrameStr {
+                FERRUM_FRAME_STR_TYPE => Ok(FrameStr(FerrumFrameStr {
                     data: "".to_string(),
                 })),
 
@@ -62,6 +61,9 @@ impl FerrumProto {
             },
             // not empty string and array
             len => {
+                if self.read_data.len() < self.read_data_wait_len {
+                    return Ok(FrameNone);
+                }
                 let p = self.read_data.split_to(self.read_data_wait_len);
                 debug!("read frame buf splitted len {}", p.len());
                 self.read_data_wait_len = 0;
@@ -90,7 +92,7 @@ impl FerrumProto {
     pub fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes> {
         let bytes_len_bytes = u16::try_from(val.len()).ok().unwrap().to_be_bytes();
         let mut d = BytesMut::with_capacity(1 + val.len() + bytes_len_bytes.len());
-        d.put_u8(2u8);
+        d.put_u8(FERRUM_FRAME_BYTES_TYPE);
         d.extend_from_slice(bytes_len_bytes.as_slice());
         d.extend_from_slice(val);
 
@@ -105,7 +107,54 @@ mod tests {
 
     use std::os::unix::fs::MetadataExt;
     use std::time::Duration;
+    #[test]
+    fn decode_none() {
+        let mut proto = FerrumProto::new(1024);
+        let frame = proto.decode_frame();
+        assert_eq!(frame.is_ok(), true);
+        let frame = frame.unwrap();
+        let res = match frame {
+            FrameBytes(a) => unreachable!("not possible"),
+            FrameStr(a) => unreachable!("not possible"),
+            FrameNone => Ok(()),
+        };
 
+        proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
+        //check again
+        let frame = proto.decode_frame();
+        assert_eq!(frame.is_ok(), true);
+        let frame = frame.unwrap();
+        let res = match frame {
+            FrameBytes(a) => unreachable!("not possible"),
+            FrameStr(a) => unreachable!("not possible"),
+            FrameNone => Ok(()),
+        };
+        let mut bytes = BytesMut::new();
+        bytes.reserve(16);
+        bytes.put_u16(0x0005);
+        proto.write(&bytes);
+        let frame = proto.decode_frame();
+        assert_eq!(frame.is_ok(), true);
+        let frame = frame.unwrap();
+        let res = match frame {
+            FrameBytes(a) => unreachable!("not possible"),
+            FrameStr(a) => unreachable!("not possible"),
+            FrameNone => Ok(()),
+        };
+
+        bytes.clear();
+        bytes.extend_from_slice(&[0, 1, 2, 3, 4]);
+        proto.write(&bytes);
+        let frame = proto.decode_frame();
+        assert_eq!(frame.is_ok(), true);
+        let frame = frame.unwrap();
+        let res = match frame {
+            FrameBytes(a) => a,
+            FrameStr(a) => unreachable!("not possible"),
+            FrameNone => unreachable!("not possible"),
+        };
+        assert_eq!(res.data, [0, 1, 2, 3, 4])
+    }
     #[test]
     fn encode_decode_str() {
         let mut proto = FerrumProto::new(1024);
@@ -115,7 +164,7 @@ mod tests {
         let bytes = &mut bytes::Bytes::from(frame.data);
 
         let ptype = bytes.get_u8();
-        assert_eq!(ptype, 1);
+        assert_eq!(ptype, FERRUM_FRAME_STR_TYPE);
         let len = bytes.get_u16();
         assert_eq!(len, 5);
         assert_eq!(bytes.to_vec(), b"hello");
@@ -128,6 +177,30 @@ mod tests {
             FrameNone => unreachable!("imposibble"),
             FrameBytes(data) => unreachable!("imposibble"),
             FrameStr(data) => assert_eq!(data.data, "hello"),
+        }
+    }
+
+    fn encode_decode_bytes() {
+        let mut proto = FerrumProto::new(1024);
+        let frame = proto.encode_frame_bytes(b"hello").unwrap();
+
+        assert_eq!(frame.data.len(), 8);
+        let bytes = &mut bytes::Bytes::from(frame.data);
+
+        let ptype = bytes.get_u8();
+        assert_eq!(ptype, FERRUM_FRAME_BYTES_TYPE);
+        let len = bytes.get_u16();
+        assert_eq!(len, 5);
+        assert_eq!(bytes.to_vec(), b"hello");
+
+        let frame = proto.encode_frame_bytes(b"hello").unwrap();
+
+        proto.write(&frame.data);
+        let res = proto.decode_frame().unwrap();
+        match res {
+            FrameNone => unreachable!("imposibble"),
+            FrameBytes(data) => assert_eq!(data.data, b"hello"),
+            FrameStr(data) => unreachable!("imposibble"),
         }
     }
 }

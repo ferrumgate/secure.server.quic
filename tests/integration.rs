@@ -115,8 +115,8 @@ mod tests {
 
         //start client
 
-        let (mut send, _) = client.connect().await.unwrap();
-        let _ = send.write_all(b"ops").await;
+        client.connect().await.unwrap();
+        //let _ = client send.write_all(b"ops").await;
         //let _ = recv.read(a.data.as_mut()).await;
         client.close();
 
