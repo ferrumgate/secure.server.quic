@@ -55,3 +55,6 @@ futures-core = "0.3.28"
 futures = "0.3.28"
 bytes = "1.4.0"
 async-trait = "0.1.72"
+
+[dev-dependencies]
+mockall = "0.11.4"

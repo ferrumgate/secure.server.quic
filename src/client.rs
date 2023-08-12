@@ -19,7 +19,7 @@ use std::{
     fs,
     io::{self, Write},
     net::{SocketAddr, ToSocketAddrs},
-    ops::Deref,
+    ops::{Deref, DerefMut},
     path::PathBuf,
     str,
     sync::Arc,
@@ -44,7 +44,8 @@ use webpki_roots::TLS_SERVER_ROOTS;
 use ferrum_stream::{
     FerrumFrame,
     FerrumFrame::{FrameBytes, FrameNone, FrameStr},
-    FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumStream,
+    FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumReadStream, FerrumStream,
+    FerrumWriteStream,
 };
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
@@ -91,9 +92,9 @@ pub struct FerrumClient {
     read_buf: Vec<u8>,
     options: FerrumClientConfig,
     crypto: rustls::client::ClientConfig,
-    connection: Option<quinn::Connection>,
-    read_stream: Option<quinn::RecvStream>,
-    write_stream: Option<quinn::SendStream>,
+    connection: Option<Box<quinn::Connection>>,
+    read_stream: Option<Box<dyn FerrumReadStream>>,
+    write_stream: Option<Box<dyn FerrumWriteStream>>,
     proto: Option<FerrumProto>,
 }
 impl FerrumClient {
@@ -166,10 +167,10 @@ impl FerrumClient {
             error!("rebinding to {addr}");
             endpoint.rebind(socket).expect("rebind failed");
         }
-        self.connection = Some(connection);
+        self.connection = Some(Box::new(connection));
 
-        self.read_stream = Some(recv);
-        self.write_stream = Some(send);
+        self.read_stream = Some(Box::new(recv));
+        self.write_stream = Some(Box::new(send));
         self.proto = Some(protocol);
         info!("stream opened");
 
@@ -198,22 +199,24 @@ impl FerrumClient {
 
     pub async fn process(&mut self, cancel_token: CancellationToken) -> Result<()> {
         if self.options.stdinout {
-            handle_as_stdin(
-                self.write_stream.as_mut().unwrap(),
-                self.read_stream.as_mut().unwrap(),
+            /* handle_as_stdin(
+                self.write_stream.as_mut().unwrap().as_mut(),
+                self.read_stream.as_mut().unwrap().as_mut(),
                 &cancel_token,
             )
-            .await
+            .await */
+            Ok(())
         } else {
             self.handle_client(cancel_token).await
         }
     }
     pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
         let mut stderr = tokio::io::stderr();
+
         let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
             self.proto.as_mut().unwrap(),
-            self.read_stream.as_mut().unwrap(),
+            self.read_stream.as_mut().unwrap().as_mut(),
             &cancel_token,
         )
         .await
@@ -237,7 +240,7 @@ impl FerrumClient {
         let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
             self.proto.as_mut().unwrap(),
-            self.read_stream.as_mut().unwrap(),
+            self.read_stream.as_mut().unwrap().as_mut(),
             &cancel_token,
         )
         .await
@@ -319,7 +322,7 @@ impl FerrumClient {
                             debug!("readed from tun {} and streamed",data.data.len());
                             let res=FerrumStream::write_bytes(data.data.as_ref(),
                             self.proto.as_mut().unwrap(),
-                            self.write_stream.as_mut().unwrap()).await;
+                            self.write_stream.as_mut().unwrap().as_mut()).await;
 
                             if let Err(e) =res {
                                     error!("stream write error {}", e);
@@ -329,7 +332,7 @@ impl FerrumClient {
                     }
 
                 },
-                resp = self.read_stream.as_mut().unwrap().read(array)=>{
+                resp = self.read_stream.as_mut().unwrap().as_mut().read_ext(array)=>{
 
                     match resp{
                         Err(e) => {

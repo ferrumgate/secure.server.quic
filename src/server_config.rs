@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf};
 
+#[derive(Clone)]
 pub struct FerrumServerConfig {
     pub listen: SocketAddr,
     pub ip: String,

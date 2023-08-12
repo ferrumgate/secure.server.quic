@@ -24,7 +24,8 @@ use rustls::{Certificate, PrivateKey};
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
 use ferrum_stream::{
-    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumStream, FerrumStreamFrame,
+    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumReadStream, FerrumStream,
+    FerrumStreamFrame, FerrumWriteStream,
 };
 use ferrum_tun::FerrumTun;
 
@@ -42,8 +43,8 @@ pub struct FerrumClient {
     redis_user: Option<String>,
     redis_pass: Option<String>,
     gateway_id: String,
-    read_stream: Option<quinn::RecvStream>,
-    write_stream: Option<quinn::SendStream>,
+    read_stream: Option<Box<dyn FerrumReadStream>>,
+    write_stream: Option<Box<dyn FerrumWriteStream>>,
     proto: Option<FerrumProto>,
     connection: Option<quinn::Connection>,
 }
@@ -169,27 +170,28 @@ impl FerrumServer {
             conn=self.endpoint.accept()=>{conn},
             _=cancel_token.cancelled()=>{None}
         } {
-            let mut client = FerrumClient {
-                client_ip: conn.remote_address().to_string(),
-                redis_host: self.options.redis_host.clone(),
-                redis_user: self.options.redis_user.clone(),
-                redis_pass: self.options.redis_pass.clone(),
-                gateway_id: self.options.gateway_id.clone(),
-                proto: None,
-                read_stream: None,
-                write_stream: None,
-                connection: None,
-                read_buf: Vec::with_capacity(1024),
-            };
             //TODO!("check from rate limit list");
             debug!("connection incoming");
-            let fut = timeout(
-                Duration::from_millis(self.options.connect_timeout),
-                FerrumServer::handle_connection(conn),
-            );
-
+            let options = self.options.clone();
             let cancel_token = cancel_token.clone();
             tokio::spawn(async move {
+                let mut client = FerrumClient {
+                    client_ip: conn.remote_address().to_string(),
+                    redis_host: options.redis_host,
+                    redis_user: options.redis_user,
+                    redis_pass: options.redis_pass,
+                    gateway_id: options.gateway_id,
+                    proto: None,
+                    read_stream: None,
+                    write_stream: None,
+                    connection: None,
+                    read_buf: Vec::with_capacity(1024),
+                };
+                let fut = timeout(
+                    Duration::from_millis(options.connect_timeout),
+                    FerrumServer::handle_connection(conn),
+                );
+
                 let res = fut.await;
                 match res {
                     Err(err) => {
@@ -207,8 +209,8 @@ impl FerrumServer {
                                 conn.close(0u32.into(), b"done");
                             } else {
                                 client.proto = Some(FerrumProto::new(1600));
-                                client.read_stream = Some(recv);
-                                client.write_stream = Some(send);
+                                client.read_stream = Some(Box::new(recv));
+                                client.write_stream = Some(Box::new(send));
                                 client.connection = Some(conn);
 
                                 let _ =
@@ -245,7 +247,7 @@ impl FerrumServer {
             FerrumStream::read_next_frame(
                 client.read_buf.as_mut(),
                 client.proto.as_mut().unwrap(),
-                client.read_stream.as_mut().unwrap(),
+                client.read_stream.as_mut().unwrap().as_mut(),
                 &cancel_token,
             ),
         )
@@ -295,7 +297,7 @@ impl FerrumServer {
                     300000,
                 )
                 .await?;
-            let frame = client
+            let mut frame = client
                 .proto
                 .as_ref()
                 .unwrap()
@@ -305,7 +307,7 @@ impl FerrumServer {
                 .write_stream
                 .as_mut()
                 .unwrap()
-                .write_all(&frame.data)
+                .write_ext(frame.data.as_mut())
                 .await?;
             let _res = redis
                 .subscribe(
@@ -324,7 +326,7 @@ impl FerrumServer {
         })?;
         info!("tun opened: {}", ftun.name);
 
-        let frame = client
+        let mut frame = client
             .proto
             .as_ref()
             .unwrap()
@@ -334,7 +336,7 @@ impl FerrumServer {
             .write_stream
             .as_mut()
             .unwrap()
-            .write_all(&frame.data)
+            .write_ext(frame.data.as_mut())
             .await?;
 
         //output

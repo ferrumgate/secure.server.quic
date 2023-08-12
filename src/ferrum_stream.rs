@@ -8,7 +8,7 @@ pub use ferrum_proto::{
     FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FrameBytes, FrameNone, FrameStr,
     FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
-use quinn::ReadError;
+use quinn::{ReadError, WriteError};
 use quinn::{RecvStream, SendStream};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -18,7 +18,7 @@ use tracing::{debug, error, info, warn};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait FerrumReadStream {
+pub trait FerrumReadStream: Send + Sync {
     async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError>;
 }
 
@@ -28,6 +28,19 @@ impl FerrumReadStream for RecvStream {
         self.read(buf).await
     }
 }
+
+#[async_trait]
+pub trait FerrumWriteStream: Send + Sync {
+    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), WriteError>;
+}
+
+#[async_trait]
+impl FerrumWriteStream for SendStream {
+    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), WriteError> {
+        self.write_all(buf).await
+    }
+}
+
 pub enum FerrumStreamFrame {
     FrameStr(FerrumFrameStr),
     FrameBytes(FerrumFrameBytes),
@@ -38,7 +51,7 @@ impl FerrumStream {
     pub async fn read_next_frame(
         read_buf: &mut Vec<u8>,
         proto: &mut FerrumProto,
-        read_stream: &mut impl FerrumReadStream,
+        read_stream: &mut dyn FerrumReadStream,
         cancel_token: &CancellationToken,
     ) -> Result<FerrumStreamFrame> {
         //returns STR or BYTES frame, not NONE frame
@@ -117,7 +130,7 @@ impl FerrumStream {
     pub async fn read_next_frame_str(
         read_buf: &mut Vec<u8>,
         proto: &mut FerrumProto,
-        read_stream: &mut impl FerrumReadStream,
+        read_stream: &mut dyn FerrumReadStream,
         cancel_token: &CancellationToken,
     ) -> Result<FerrumFrameStr> {
         let msg = FerrumStream::read_next_frame(read_buf, proto, read_stream, cancel_token).await?;
@@ -135,10 +148,10 @@ impl FerrumStream {
     pub async fn write_str(
         val: &str,
         proto: &mut FerrumProto,
-        send: &mut SendStream,
+        send: &mut dyn FerrumWriteStream,
     ) -> Result<()> {
-        let frame = proto.encode_frame_str(val)?;
-        send.write_all(&frame.data).await?;
+        let mut frame = proto.encode_frame_str(val)?;
+        send.write_ext(frame.data.as_mut()).await?;
         Ok(())
     }
 
@@ -146,10 +159,10 @@ impl FerrumStream {
     pub async fn write_bytes(
         val: &[u8],
         proto: &mut FerrumProto,
-        send: &mut SendStream,
+        send: &mut dyn FerrumWriteStream,
     ) -> Result<()> {
-        let frame = proto.encode_frame_bytes(val)?;
-        send.write_all(&frame.data).await?;
+        let mut frame = proto.encode_frame_bytes(val)?;
+        send.write_ext(frame.data.as_mut()).await?;
         Ok(())
     }
 }
