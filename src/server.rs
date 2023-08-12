@@ -11,17 +11,10 @@ mod ferrum_stream;
 #[path = "server_config.rs"]
 mod server_config;
 
-use std::{
-    fs,
-    net::{SocketAddr, ToSocketAddrs},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
-use bytes::BytesMut;
-use clap::Parser;
+
 use common::handle_as_stdin;
 
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
@@ -30,11 +23,13 @@ use rustls::{Certificate, PrivateKey};
 
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
-use ferrum_stream::{FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumStream};
+use ferrum_stream::{
+    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumStream, FerrumStreamFrame,
+};
 use ferrum_tun::FerrumTun;
 
 pub use server_config::FerrumServerConfig;
-use tokio::io::AsyncWriteExt;
+
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -235,7 +230,7 @@ impl FerrumServer {
 
         // Each stream initiated by the client constitutes a new request.
 
-        let (send, mut recv) = connection.accept_bi().await?;
+        let (send, recv) = connection.accept_bi().await?;
         info!("stream opened {}", connection.remote_address());
         Ok((send, recv, connection))
     }
@@ -264,15 +259,11 @@ impl FerrumServer {
             err
         })?;
         match hello_msg {
-            FerrumFrame::FrameNone => {
+            FerrumStreamFrame::FrameBytes(_a) => {
                 error!("protocol error");
                 return Err(anyhow!("protocol error"));
             }
-            FerrumFrame::FrameBytes(a) => {
-                error!("protocol error");
-                return Err(anyhow!("protocol error"));
-            }
-            FerrumFrame::FrameStr(a) => {
+            FerrumStreamFrame::FrameStr(a) => {
                 if a.data != "hello" {
                     error!("protocol error");
                     return Err(anyhow!("protocol error"));
@@ -327,7 +318,7 @@ impl FerrumServer {
             }
         }
         debug!("authentication completed for {}", client.client_ip);
-        let mut ftun = FerrumTun::new(2000).map_err(|e| {
+        let ftun = FerrumTun::new(2000).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;
@@ -348,7 +339,7 @@ impl FerrumServer {
 
         //output
 
-        let array = &mut [0u8; 1024];
+        let _array = &mut [0u8; 1024];
 
         //let mut stdout = tokio::io::stderr();
 

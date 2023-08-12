@@ -1,20 +1,10 @@
 mod client;
 mod common;
 
-use std::{
-    borrow::BorrowMut,
-    fs,
-    io::{self, Write},
-    net::{SocketAddr, ToSocketAddrs},
-    ops::Deref,
-    path::PathBuf,
-    str,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{net::ToSocketAddrs, path::PathBuf};
 
-use anyhow::{anyhow, Error, Result};
-use bytes::BytesMut;
+use anyhow::{anyhow, Result};
+
 use clap::Parser;
 
 use client::{FerrumClient, FerrumClientConfig};
@@ -120,7 +110,7 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
     let roots = FerrumClient::create_root_certs(&options)?;
 
     let mut client: FerrumClient = FerrumClient::new(options, roots);
-    let result = client.connect().await.map_err(|err| {
+    let _ = client.connect().await.map_err(|err| {
         error!("could not connect {}", err);
         err
     })?;
@@ -155,9 +145,7 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-    use std::{fs::create_dir, net::ToSocketAddrs};
-
-    use clap::Parser;
+    use std::net::ToSocketAddrs;
 
     use super::*;
 

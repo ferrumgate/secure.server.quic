@@ -262,11 +262,12 @@ impl FerrumClient {
             Duration::from_millis(5000),
             self.handle_open(cancel_token.clone()),
         )
-        .await?;
-        if let Err(e) = result {
-            error!("handle open failed {}", e);
-            return Err(e);
-        }
+        .await
+        .map_err(|err| {
+            error!("handle open failed {}", err);
+            err
+        })?;
+
         if !result.unwrap().starts_with("ferrum_open:") {
             error!("waits for ferrum_open");
             return Err(anyhow!("ferrum protocol invalid"));
@@ -346,24 +347,23 @@ impl FerrumClient {
                                     debug!("data received from stream {}", data);
                                     self.proto.as_mut().unwrap().write(&self.read_buf[..data]);
 
-                                    let mut break_loop=false;
-                                    loop{
+
+                                    let mut break_loop=true;
+                                    loop
+                                    {
                                         let res=self.proto.as_mut().unwrap().decode_frame();
                                         match res{
                                             Err(e) =>{
                                                 error!("tun parse frame failed {}", e);
-                                                break_loop=true;
                                                 break;
                                             }
                                             Ok(res_frame)=>{
                                                 match res_frame {
                                                     FrameNone=> {//no frame detected
-                                                        break_loop=true;
                                                         break;
                                                     },
                                                     FrameStr(_)=>{
                                                         warn!("not valid frame");
-                                                        break_loop=true;
                                                         break;
 
                                                     },
@@ -374,10 +374,11 @@ impl FerrumClient {
                                                         match res{
                                                             Err(e) => {
                                                                 error!("tun write failed {}", e);
-                                                                break_loop=true;
                                                                 break;
                                                             },
-                                                            _=>{}
+                                                            _=>{
+                                                                break_loop=false;
+                                                            }
                                                         }
 
                                                     }

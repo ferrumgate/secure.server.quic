@@ -104,8 +104,8 @@ pub fn generate_random_string(len: usize) -> String {
 
 #[allow(dead_code)]
 pub async fn handle_as_stdin(
-    mut send: &mut SendStream,
-    mut recv: &mut RecvStream,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
     cancel_token: &CancellationToken,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();

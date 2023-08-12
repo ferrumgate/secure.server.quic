@@ -1,12 +1,6 @@
-use anyhow::{anyhow, Ok, Result};
-
-use futures::{SinkExt, StreamExt};
-
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio_util::codec::Framed;
-use tracing::{debug, error, info, warn};
+use anyhow::{Ok, Result};
+use bytes::{Buf, BufMut, BytesMut};
+use tracing::debug;
 
 pub const FERRUM_FRAME_STR_TYPE: u8 = 0x1;
 pub const FERRUM_FRAME_BYTES_TYPE: u8 = 0x2;
@@ -60,7 +54,7 @@ impl FerrumProto {
                 _ => Ok(FrameBytes(FerrumFrameBytes { data: [].to_vec() })),
             },
             // not empty string and array
-            len => {
+            _len => {
                 if self.read_data.len() < self.read_data_wait_len {
                     return Ok(FrameNone);
                 }

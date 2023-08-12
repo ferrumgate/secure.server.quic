@@ -1,9 +1,9 @@
 #[path = "ferrum_proto.rs"]
 mod ferrum_proto;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 //use async_trait::async_trait;
-use bytes::BytesMut;
+
 pub use ferrum_proto::{
     FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FrameBytes, FrameNone, FrameStr,
     FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
@@ -12,7 +12,7 @@ use quinn::ReadError;
 use quinn::{RecvStream, SendStream};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{debug, error, info, warn};
 
 // we need this for testing
 use async_trait::async_trait;
@@ -28,6 +28,10 @@ impl FerrumReadStream for RecvStream {
         self.read(buf).await
     }
 }
+pub enum FerrumStreamFrame {
+    FrameStr(FerrumFrameStr),
+    FrameBytes(FerrumFrameBytes),
+}
 
 pub struct FerrumStream {}
 impl FerrumStream {
@@ -36,13 +40,16 @@ impl FerrumStream {
         proto: &mut FerrumProto,
         read_stream: &mut impl FerrumReadStream,
         cancel_token: &CancellationToken,
-    ) -> Result<FerrumFrame> {
+    ) -> Result<FerrumStreamFrame> {
+        //returns STR or BYTES frame, not NONE frame
         let frame = proto.decode_frame()?;
+        // test a1
         if let FerrumFrame::FrameBytes(a) = frame {
-            return Ok(FerrumFrame::FrameBytes(a));
+            return Ok(FerrumStreamFrame::FrameBytes(a));
         }
+        // test a2
         if let FerrumFrame::FrameStr(a) = frame {
-            return Ok(FerrumFrame::FrameStr(a));
+            return Ok(FerrumStreamFrame::FrameStr(a));
         }
 
         loop {
@@ -55,6 +62,7 @@ impl FerrumStream {
 
                     match resp {
                         Err(e) =>{
+                            // test b1
                             error!("stream read error {}", e);
                             return Err(anyhow!("stream read error"));
                         },
@@ -62,24 +70,38 @@ impl FerrumStream {
                         debug!("received data");
                             match data {
                                 Some(0) => {
+                                    // test b2
                                     info!("stream closed");
                                     return Err(anyhow!("stream closed"));
                                 }
                                 Some(data) => {
+
                                     debug!("data received bytes {}", data);
                                     proto.write(&read_buf[0..data]);
 
                                     let frame = proto.decode_frame()?;
 
-                                    if let FerrumFrame::FrameBytes(a) = frame {
-                                        return Ok(FerrumFrame::FrameBytes(a));
+                                    match frame {
+                                    FerrumFrame::FrameBytes(a) =>{
+                                        // test b3
+                                        return Ok(FerrumStreamFrame::FrameBytes(a));
                                     }
-                                    if let FerrumFrame::FrameStr(a) = frame {
-                                        return Ok(FerrumFrame::FrameStr(a));
+                                    FerrumFrame::FrameStr(a) => {
+                                        // test b4
+                                        return Ok(FerrumStreamFrame::FrameStr(a));
                                     }
+                                    _=>{}
+                                    // this breaks loop
+                                    // we need to wait for much
+                                    /* FerrumFrame::FrameNone => {
+                                        // test bb1
+                                        return Ok(FerrumFrame::FrameNone);
+                                    } */
+                                }
 
                                 }
                                 None => {
+                                    //test b5
                                     info!("stream finished");
                                     return Err(anyhow!("stream finished"));
                                 }
@@ -91,23 +113,25 @@ impl FerrumStream {
         }
     }
 
+    #[allow(unused)]
     pub async fn read_next_frame_str(
         read_buf: &mut Vec<u8>,
         proto: &mut FerrumProto,
-        read_stream: &mut RecvStream,
+        read_stream: &mut impl FerrumReadStream,
         cancel_token: &CancellationToken,
     ) -> Result<FerrumFrameStr> {
         let msg = FerrumStream::read_next_frame(read_buf, proto, read_stream, cancel_token).await?;
         match msg {
-            FerrumFrame::FrameNone => {
-                return Err(anyhow!("frame is none"));
-            }
-            FerrumFrame::FrameBytes(_) => {
+            FerrumStreamFrame::FrameBytes(_) => {
+                // test d2
                 return Err(anyhow!("frame is byte"));
             }
-            FerrumFrame::FrameStr(a) => return Ok(a),
+            // test d3
+            FerrumStreamFrame::FrameStr(a) => return Ok(a),
         }
     }
+
+    #[allow(unused)]
     pub async fn write_str(
         val: &str,
         proto: &mut FerrumProto,
@@ -117,6 +141,8 @@ impl FerrumStream {
         send.write_all(&frame.data).await?;
         Ok(())
     }
+
+    #[allow(unused)]
     pub async fn write_bytes(
         val: &[u8],
         proto: &mut FerrumProto,
@@ -130,7 +156,6 @@ impl FerrumStream {
 
 #[cfg(test)]
 mod tests {
-    use std::io::BufReader;
 
     use bytes::{BufMut, BytesMut};
 
@@ -143,13 +168,15 @@ mod tests {
     #[async_trait]
     impl FerrumReadStream for MockRecvStream {
         async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
-            buf.copy_from_slice(self.buf.as_slice());
+            buf.clone_from_slice(&self.buf);
             self.res.clone()
         }
     }
     #[tokio::test]
     async fn read_next_frame_bytes() {
+        // test a1
         let read_buf = &mut Vec::<u8>::new();
+
         let proto = &mut FerrumProto::new(1024);
         let cancel_token = &CancellationToken::new();
 
@@ -157,6 +184,7 @@ mod tests {
         let mut bytes = BytesMut::new();
         bytes.put_u16(5u16);
         bytes.extend_from_slice(&[0, 1, 2, 3, 4]);
+        proto.write(bytes.as_mut());
 
         let mut mock_stream = MockRecvStream {
             buf: Vec::new(),
@@ -167,11 +195,229 @@ mod tests {
             FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
 
         match frame {
-            Err(e) => unreachable!("imposibble"),
+            Err(_) => unreachable!("imposibble"),
             Ok(a) => match a {
-                FrameBytes(b) => {}
+                FerrumStreamFrame::FrameBytes(_) => {}
                 _ => unreachable!("imposibble"),
             },
+        }
+    }
+    #[tokio::test]
+    async fn read_next_frame_str() {
+        // test a2
+        let read_buf = &mut Vec::<u8>::new();
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+        bytes.extend_from_slice(b"hello");
+        proto.write(bytes.as_mut());
+
+        let mut mock_stream = MockRecvStream {
+            buf: Vec::new(),
+            res: Result::Ok(Some(0usize)),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => unreachable!("imposibble"),
+            Ok(a) => match a {
+                FerrumStreamFrame::FrameStr(_) => {}
+                _ => unreachable!("imposibble"),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_bytes_and_stream_read_error() {
+        // test b1
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4],
+            res: Result::Err(ReadError::IllegalOrderedRead),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => {}
+            Ok(_) => unreachable!("impossible"),
+        }
+    }
+    #[tokio::test]
+    async fn read_next_frame_bytes_stream_read_0_length() {
+        // test b2
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4],
+            res: Result::Ok(Some(0)),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => {}
+            Ok(_) => unreachable!("impossible"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_bytes_stream_read_some_data() {
+        //test b3
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4],
+            res: Result::Ok(Some(5)),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => unreachable!("impossible"),
+            Ok(a) => match a {
+                FerrumStreamFrame::FrameBytes(_) => {}
+                _ => unreachable!("impossible"),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_bytes_stream_read_some_data2() {
+        //test b4
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: b"hello".to_vec(),
+            res: Result::Ok(Some(5)),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => unreachable!("impossible"),
+            Ok(a) => match a {
+                FerrumStreamFrame::FrameStr(_) => {}
+                _ => unreachable!("impossible"),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_bytes_stream_read_none() {
+        //test b4
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: b"hello".to_vec(),
+            res: Result::Ok(None),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame(read_buf, proto, &mut mock_stream, cancel_token).await;
+
+        match frame {
+            Err(_) => {}
+            Ok(_a) => unreachable!("impossible"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_str_err() {
+        //test d2
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: b"hello".to_vec(),
+            res: Result::Ok(None),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame_str(read_buf, proto, &mut mock_stream, cancel_token)
+                .await;
+
+        match frame {
+            Err(_) => {}
+            Ok(_a) => unreachable!("impossible"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_next_frame_str2() {
+        //test d3
+        let read_buf = &mut vec![0, 1, 2, 3, 4];
+
+        let proto = &mut FerrumProto::new(1024);
+        let cancel_token = &CancellationToken::new();
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        let mut bytes = BytesMut::new();
+        bytes.put_u16(5u16);
+
+        let mut mock_stream = MockRecvStream {
+            buf: b"hello".to_vec(),
+            res: Result::Ok(Some(5)),
+        };
+
+        let frame =
+            FerrumStream::read_next_frame_str(read_buf, proto, &mut mock_stream, cancel_token)
+                .await;
+
+        match frame {
+            Err(_) => unreachable!("impossible"),
+            Ok(a) => {}
         }
     }
 }

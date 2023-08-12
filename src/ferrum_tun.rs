@@ -2,9 +2,9 @@ use anyhow::{anyhow, Ok, Result};
 use common::generate_random_string;
 use futures::{SinkExt, StreamExt};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::BytesMut;
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, warn};
+
 use tun::{TunPacket, TunPacketCodec};
 #[path = "common.rs"]
 mod common;
@@ -41,6 +41,8 @@ impl FerrumTun {
             stream: dev.into_framed(),
         })
     }
+
+    #[allow(unused)]
     pub async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
         let res = self.stream.next().await;
         match res {
@@ -59,6 +61,7 @@ impl FerrumTun {
         }
     }
 
+    #[allow(unused)]
     pub async fn write(self: &mut Self, buf: &[u8]) -> Result<(), std::io::Error> {
         self.stream.send(TunPacket::new(buf.to_vec())).await
     }
@@ -68,7 +71,10 @@ impl FerrumTun {
 #[allow(unused)]
 #[cfg(test)]
 mod tests {
+    use bytes::{Buf, Bytes};
+
     use super::*;
+
     use std::os::unix::fs::MetadataExt;
     use std::time::Duration;
     #[tokio::test]
