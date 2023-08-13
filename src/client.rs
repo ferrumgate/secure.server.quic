@@ -166,6 +166,7 @@ impl FerrumClient {
         let mut protocol = FerrumProtoDefault::new(32);
 
         //protocol starting
+        debug!("sending hello msg");
         FerrumStream::write_str("hello", protocol.borrow_mut(), send.borrow_mut()).await?; //write hello to server for protocol starting
 
         if self.options.rebind {

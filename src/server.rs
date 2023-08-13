@@ -296,6 +296,7 @@ impl FerrumServer {
                     error!("protocol error");
                     return Err(anyhow!("protocol error"));
                 }
+                debug!("hello msg received");
             }
         }
 

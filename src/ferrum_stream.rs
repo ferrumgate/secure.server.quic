@@ -9,7 +9,7 @@ pub use ferrum_proto::{
     FrameNone, FrameStr, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
 use quinn::{RecvStream, SendStream};
-use tokio::select;
+use tokio::{io::AsyncWriteExt, select};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -24,7 +24,12 @@ pub trait FerrumReadStream: Send {
 #[async_trait]
 impl FerrumReadStream for RecvStream {
     async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
-        self.read(buf).await.map_err(|err| anyhow!(err.to_string()))
+        let res = self
+            .read(buf)
+            .await
+            .map_err(|err| anyhow!(err.to_string()))?;
+        debug!("readed from stream len: {}", res.unwrap());
+        Ok(res)
     }
 }
 
@@ -36,9 +41,11 @@ pub trait FerrumWriteStream: Send {
 #[async_trait]
 impl FerrumWriteStream for SendStream {
     async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error> {
+        debug!("writing to stream len: {}", buf.len());
         self.write_all(buf)
             .await
             .map_err(|err| anyhow!(err.to_string()))
+        //self.flush().await.map_err(|err| anyhow!(err.to_string()))?;
     }
 }
 
