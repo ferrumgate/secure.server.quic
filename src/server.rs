@@ -24,10 +24,10 @@ use rustls::{Certificate, PrivateKey};
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
 use ferrum_stream::{
-    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumReadStream, FerrumStream,
-    FerrumStreamFrame, FerrumWriteStream,
+    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault,
+    FerrumReadStream, FerrumStream, FerrumStreamFrame, FerrumWriteStream,
 };
-use ferrum_tun::FerrumTun;
+use ferrum_tun::{FerrumTun, FerrumTunPosix};
 
 pub use server_config::FerrumServerConfig;
 
@@ -45,7 +45,7 @@ pub struct FerrumClient {
     gateway_id: String,
     read_stream: Option<Box<dyn FerrumReadStream>>,
     write_stream: Option<Box<dyn FerrumWriteStream>>,
-    proto: Option<FerrumProto>,
+    proto: Option<Box<dyn FerrumProto>>,
     connection: Option<quinn::Connection>,
 }
 impl FerrumClient {
@@ -187,12 +187,12 @@ impl FerrumServer {
                     connection: None,
                     read_buf: Vec::with_capacity(1024),
                 };
-                let fut = timeout(
+                let res = timeout(
                     Duration::from_millis(options.connect_timeout),
                     FerrumServer::handle_connection(conn),
-                );
+                )
+                .await;
 
-                let res = fut.await;
                 match res {
                     Err(err) => {
                         //TODO("add to rate limit list");
@@ -208,7 +208,7 @@ impl FerrumServer {
                                 let _ = handle_as_stdin(&mut send, &mut recv, &cancel_token).await;
                                 conn.close(0u32.into(), b"done");
                             } else {
-                                client.proto = Some(FerrumProto::new(1600));
+                                client.proto = Some(Box::new(FerrumProtoDefault::new(1600)));
                                 client.read_stream = Some(Box::new(recv));
                                 client.write_stream = Some(Box::new(send));
                                 client.connection = Some(conn);
@@ -246,7 +246,7 @@ impl FerrumServer {
             Duration::from_millis(5000),
             FerrumStream::read_next_frame(
                 client.read_buf.as_mut(),
-                client.proto.as_mut().unwrap(),
+                client.proto.as_mut().unwrap().as_mut(),
                 client.read_stream.as_mut().unwrap().as_mut(),
                 &cancel_token,
             ),
@@ -320,7 +320,7 @@ impl FerrumServer {
             }
         }
         debug!("authentication completed for {}", client.client_ip);
-        let ftun = FerrumTun::new(2000).map_err(|e| {
+        let ftun = FerrumTunPosix::new(2000).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;

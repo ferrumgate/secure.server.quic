@@ -11,11 +11,13 @@ mod ferrum_tun;
 #[path = "ferrum_stream.rs"]
 mod ferrum_stream;
 
-use anyhow::{anyhow, Error, Result};
-use bytes::BytesMut;
+use anyhow::{anyhow, Result};
+use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use std::{
+    any::Any,
     borrow::BorrowMut,
+    cell::Cell,
     fs,
     io::{self, Write},
     net::{SocketAddr, ToSocketAddrs},
@@ -23,12 +25,13 @@ use std::{
     path::PathBuf,
     str,
     sync::Arc,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
 pub use client_config::FerrumClientConfig;
 use common::{get_log_level, handle_as_stdin};
-use ferrum_tun::FerrumTun;
+use ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
 use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -44,9 +47,11 @@ use webpki_roots::TLS_SERVER_ROOTS;
 use ferrum_stream::{
     FerrumFrame,
     FerrumFrame::{FrameBytes, FrameNone, FrameStr},
-    FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumReadStream, FerrumStream,
-    FerrumWriteStream,
+    FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault, FerrumReadStream,
+    FerrumStream, FerrumWriteStream, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
+
+use async_trait::async_trait;
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
 struct SkipServerVerification;
@@ -95,7 +100,8 @@ pub struct FerrumClient {
     connection: Option<Box<quinn::Connection>>,
     read_stream: Option<Box<dyn FerrumReadStream>>,
     write_stream: Option<Box<dyn FerrumWriteStream>>,
-    proto: Option<FerrumProto>,
+    proto: Option<Box<dyn FerrumProto>>,
+    tun: Option<Box<dyn FerrumTun>>,
 }
 impl FerrumClient {
     pub fn new(options: FerrumClientConfig, certs: RootCertStore) -> Self {
@@ -110,6 +116,7 @@ impl FerrumClient {
             write_stream: None,
             proto: None,
             read_buf: vec![0; 1024],
+            tun: None,
         };
 
         if client.options.insecure {
@@ -156,7 +163,7 @@ impl FerrumClient {
 
         info!("connected at {:?}", start.elapsed());
         let (mut send, recv) = connection.open_bi().await?;
-        let mut protocol = FerrumProto::new(32);
+        let mut protocol = FerrumProtoDefault::new(32);
 
         //protocol starting
         FerrumStream::write_str("hello", protocol.borrow_mut(), send.borrow_mut()).await?; //write hello to server for protocol starting
@@ -171,7 +178,7 @@ impl FerrumClient {
 
         self.read_stream = Some(Box::new(recv));
         self.write_stream = Some(Box::new(send));
-        self.proto = Some(protocol);
+        self.proto = Some(Box::new(protocol));
         info!("stream opened");
 
         Ok(())
@@ -207,7 +214,7 @@ impl FerrumClient {
             .await */
             Ok(())
         } else {
-            self.handle_client(cancel_token).await
+            self.handle_client(cancel_token, 5000).await
         }
     }
     pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
@@ -215,12 +222,13 @@ impl FerrumClient {
 
         let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
-            self.proto.as_mut().unwrap(),
+            self.proto.as_mut().unwrap().as_mut(),
             self.read_stream.as_mut().unwrap().as_mut(),
             &cancel_token,
         )
         .await
         .map_err(|err| {
+            //test a1
             error!("protocol error {}", err);
             err
         })?;
@@ -229,6 +237,7 @@ impl FerrumClient {
             error!("stdout write failed {}", e);
             return Err(e.into());
         }
+        //test a2
         return Ok(frame.data);
     }
 
@@ -239,12 +248,13 @@ impl FerrumClient {
         let mut stderr = tokio::io::stderr();
         let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
-            self.proto.as_mut().unwrap(),
+            self.proto.as_mut().unwrap().as_mut(),
             self.read_stream.as_mut().unwrap().as_mut(),
             &cancel_token,
         )
         .await
         .map_err(|err| {
+            //test b1
             error!("protocol error {}", err);
             err
         })?;
@@ -253,25 +263,52 @@ impl FerrumClient {
             error!("stdout write failed {}", e);
             return Err(e.into());
         }
+        //test b2
         return Ok(frame.data);
+    }
+    fn create_tun_device(self: &mut Self) -> Result<()> {
+        if self.tun.is_some() {
+            return Ok(());
+        }
+        let tun = FerrumTunPosix::new(4096).map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        self.tun = Some(Box::new(tun));
+        eprintln!(
+            "ferrum_tunnel_opened: {}",
+            self.tun.as_ref().unwrap().get_name()
+        );
+        Ok(())
     }
 
     #[allow(dead_code)]
-    async fn handle_client(self: &mut Self, cancel_token: CancellationToken) -> Result<()> {
+    async fn handle_client(
+        self: &mut Self,
+        cancel_token: CancellationToken,
+        timeout_ms: u64,
+    ) -> Result<()> {
         let ctoken1 = cancel_token.clone();
 
         //wait for ferrum_open
         let result = timeout(
-            Duration::from_millis(5000),
+            Duration::from_millis(timeout_ms),
             self.handle_open(cancel_token.clone()),
         )
         .await
         .map_err(|err| {
+            //test h1
             error!("handle open failed {}", err);
             err
         })?;
+        if result.is_err() {
+            let err = result.unwrap_err();
+            error!("handle open failed {}", err);
+            return Err(err);
+        }
 
         if !result.unwrap().starts_with("ferrum_open:") {
+            //test h2
             error!("waits for ferrum_open");
             return Err(anyhow!("ferrum protocol invalid"));
         }
@@ -281,69 +318,81 @@ impl FerrumClient {
             Duration::from_millis(90000),
             self.handle_open_confirmed(&cancel_token.clone()),
         )
-        .await?;
-        if let Err(e) = result {
-            error!("handle confirm failed {}", e);
-            return Err(e);
+        .await
+        .map_err(|err| {
+            //test h1
+            error!("handle open confirmed failed {}", err);
+            err
+        })?;
+
+        if result.is_err() {
+            let err = result.unwrap_err();
+            error!("handle open confirmed failed {}", err);
+            return Err(err);
         }
+
         if !result.unwrap().starts_with("ferrum_tunnel_confirmed:") {
-            error!("waits for ferrum_open");
+            error!("ferrum tunnel confirm failed");
             return Err(anyhow!("ferrum protocol invalid"));
         }
 
-        let mut ftun = FerrumTun::new(4096).map_err(|e| {
-            error!("tun create failed: {}", e);
-            e
-        })?;
-        eprintln!("ferrum_tunnel_opened: {}", ftun.name.as_str());
+        self.create_tun_device()?;
 
         //output
-        let array = &mut [0u8; 4096];
 
+        let mut last_error: Option<anyhow::Error> = None;
         loop {
             debug!("waiting for input");
             select! {
                 _= ctoken1.cancelled()=>{
 
                     warn!("cancelled");
+                    //last_error=Some(anyhow!("wait canceled"));
                     break;
                 },
-                tunresp=ftun.read()=>{//tun interface readed
+                tunresp=self.tun.as_mut().unwrap().read()=>{//tun interface readed
 
                     match tunresp {
 
                         Err(e) => {
-
+                            //test h6
                             error!("tun read error {}", e);
+                            last_error=Some(e);
                             break;
                         }
                         Ok(data)=>{
-
+                            //test h7
                             debug!("readed from tun {} and streamed",data.data.len());
                             let res=FerrumStream::write_bytes(data.data.as_ref(),
-                            self.proto.as_mut().unwrap(),
+                            self.proto.as_mut().unwrap().as_mut(),
                             self.write_stream.as_mut().unwrap().as_mut()).await;
 
                             if let Err(e) =res {
+                                //test h8
                                     error!("stream write error {}", e);
+                                    last_error=Some(e);
                                     break;
                             }
                         }
                     }
 
                 },
-                resp = self.read_stream.as_mut().unwrap().as_mut().read_ext(array)=>{
+                resp = self.read_stream.as_mut().unwrap().as_mut().read_ext(self.read_buf.as_mut())=>{
 
                     match resp{
                         Err(e) => {
+                            //test h9
                             error!("stream read error {}", e);
+                            last_error=Some(e);
                             break;
                         },
                         Ok(response) =>{
 
                             match response {
                                 None | Some(0) => {
+                                    //test h10
                                     info!("stream finished");
+                                    last_error=Some(anyhow!("stream closed"));
                                     break;
                                 },
                                 Some(data) => {
@@ -351,36 +400,46 @@ impl FerrumClient {
                                     self.proto.as_mut().unwrap().write(&self.read_buf[..data]);
 
 
-                                    let mut break_loop=true;
+                                    let mut break_main_loop=true;
                                     loop
                                     {
                                         let res=self.proto.as_mut().unwrap().decode_frame();
                                         match res{
                                             Err(e) =>{
+                                                //test h11
                                                 error!("tun parse frame failed {}", e);
+                                                last_error=Some(e);
                                                 break;
                                             }
                                             Ok(res_frame)=>{
                                                 match res_frame {
-                                                    FrameNone=> {//no frame detected
+                                                    FrameNone=> {//no frame detected, follow stream
+                                                        //test h12
+                                                        //last_error=Some(anyhow!("no frame"));
+                                                        break_main_loop=false;
                                                         break;
                                                     },
                                                     FrameStr(_)=>{
+                                                        //test h13
                                                         warn!("not valid frame");
+                                                        last_error=Some(anyhow!("str frame"));
                                                         break;
 
                                                     },
                                                     FrameBytes(res_data)=>{
 
                                                         debug!("write tun packet size is: {}",res_data.data.len());
-                                                        let res=ftun.write(&res_data.data).await;
+                                                        let res=self.tun.as_mut().unwrap().write(&res_data.data).await;
                                                         match res{
                                                             Err(e) => {
+                                                                //test h14
                                                                 error!("tun write failed {}", e);
+                                                                last_error=Some(e);
                                                                 break;
                                                             },
                                                             _=>{
-                                                                break_loop=false;
+                                                                //test h15
+                                                                break_main_loop=false;
                                                             }
                                                         }
 
@@ -389,7 +448,7 @@ impl FerrumClient {
                                             }
                                         }
                                     }
-                                 if break_loop {//error occured
+                                 if break_main_loop {//error occured
                                     break;
                                  }
                                 }
@@ -403,7 +462,17 @@ impl FerrumClient {
 
         //debug!("connection closed");
         debug!("closing everything");
-        Ok(())
+        if last_error.is_none() {
+            return Ok(());
+        } else {
+            let err = last_error.unwrap();
+            if cfg!(debug_assertions) {
+                eprintln!("{}", err);
+            } else {
+                debug!("{}", err);
+            }
+            return Err(err);
+        }
     }
 }
 
@@ -414,11 +483,53 @@ fn duration_secs(x: &Duration) -> f32 {
 #[cfg(test)]
 mod tests {
 
-    use std::{fs::create_dir, net::ToSocketAddrs};
+    use std::{fs::create_dir, net::ToSocketAddrs, rc::Rc};
 
+    use bytes::{Buf, BufMut, Bytes};
     use clap::Parser;
 
     use super::*;
+
+    struct MockRecvStream {
+        buf: Vec<u8>,
+        res: Result<Option<usize>, anyhow::Error>,
+    }
+
+    #[async_trait]
+    impl FerrumReadStream for MockRecvStream {
+        async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+            buf.clone_from_slice(&self.buf);
+            match self.res.as_mut() {
+                Ok(a) => Ok(a.clone()),
+                Err(e) => Err(anyhow!(e.to_string())),
+            }
+        }
+    }
+
+    struct MockSendStream {}
+
+    #[async_trait]
+    impl FerrumWriteStream for MockSendStream {
+        async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
+    pub fn create_config() -> FerrumClientConfig {
+        FerrumClientConfig {
+            ca: None,
+            host: "localhost".to_string(),
+            host_port: "localhost:8443".to_string(),
+            ip: "127.0.0.1:8443".parse().unwrap(),
+            keylog: false,
+            rebind: false,
+            insecure: false,
+            stdinout: false,
+            loglevel: "debug".to_string(),
+            idle_timeout: 15000,
+            connect_timeout: 3000,
+        }
+    }
 
     #[test]
     fn test_create_root_certs() {
@@ -437,5 +548,1143 @@ mod tests {
         };
         let roots = create_root_certs(&config);
         assert_eq!(roots.is_ok(), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_open_err() {
+        //test a1
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4, 5],
+            res: Ok(Some(0)),
+        }));
+
+        proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
+        proto.write(&5u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_open(cancel_token).await;
+        assert_eq!(res.is_err(), true);
+    }
+    #[tokio::test]
+    async fn test_handle_open_ok() {
+        //test a2
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4, 5],
+            res: Ok(Some(0)),
+        }));
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_open(cancel_token).await;
+        assert_eq!(res.is_err(), false);
+        assert_eq!(res.unwrap(), "ferrum_open:");
+    }
+
+    #[tokio::test]
+    async fn test_handle_open_confirmed_err() {
+        //test b1
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4, 5],
+            res: Ok(Some(0)),
+        }));
+
+        proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
+        proto.write(&5u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_open_confirmed(&cancel_token).await;
+        assert_eq!(res.is_err(), true);
+    }
+    #[tokio::test]
+    async fn test_handle_open_confirmed_ok() {
+        //test b2
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {
+            buf: vec![0, 1, 2, 3, 4, 5],
+            res: Ok(Some(0)),
+        }));
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_open_confirmed(&cancel_token).await;
+        assert_eq!(res.is_err(), false);
+        assert_eq!(res.unwrap(), "ferrum_open:");
+    }
+
+    struct MockRecvStreamTimeout {}
+    #[async_trait]
+    impl FerrumReadStream for MockRecvStreamTimeout {
+        async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            Ok(Some(5))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_timeout() {
+        //test h1
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStreamTimeout {}));
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        //proto.write(b"ferrum_open:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_client(cancel_token, 10u64).await;
+
+        assert_eq!(res.is_err(), true);
+        let err = res.err().unwrap().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("deadline has elapsed"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_invalid_protocol() {
+        //test h2
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStreamTimeout {}));
+
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrudd_openn");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_client(cancel_token, 10u64).await;
+
+        assert_eq!(res.is_err(), true);
+        let err = res.err().unwrap().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("ferrum protocol invalid"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_tun_err() {
+        //test h6
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+                Ok(Some(0))
+            }
+        }
+
+        struct MockSendStream {}
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Ok(())
+            }
+        }
+
+        struct MockTun {}
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                Err(anyhow!("fake error"))
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun {}));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        client.write_stream = Some(Box::new(MockSendStream {}));
+
+        let cancel_token = CancellationToken::new();
+        let res = client.handle_client(cancel_token, 10u64).await;
+
+        assert_eq!(res.is_err(), true);
+        let err = res.err().unwrap().to_string();
+        assert_eq!(err.starts_with("fake error"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_tun_read() {
+        //test h7
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+                Ok(Some(0))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                self.buf.lock().unwrap().extend_from_slice(buf);
+                Ok(())
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                if self.sended {
+                    tokio::time::sleep(Duration::from_millis(10000000)).await;
+                }
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token2 = cancel_token.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_token2.cancel();
+        });
+        let res = client.handle_client(cancel_token, 50u64).await;
+        let _ = tokio::join!(task);
+        assert_eq!(res.is_ok(), true);
+        let abc = rc.lock().unwrap();
+        let arr = abc.as_slice();
+        let data = &mut BytesMut::new();
+        data.put_u8(2);
+        data.put_u16(5u16);
+        data.put_slice(&[0, 1, 2, 3, 4]);
+        assert_eq!(arr, data.to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_tunread_stream_write_error() {
+        //test h8
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+                Ok(Some(0))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                if self.sended {
+                    tokio::time::sleep(Duration::from_millis(10000000)).await;
+                }
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("fake error"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_read_stream_error() {
+        //test h9
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("fake error"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_read_stream_closed() {
+        //test h10
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                Ok(Some(0))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("stream closed"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_read_stream_() {
+        //test h10
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                Ok(Some(0))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(FerrumProtoDefault::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("stream closed"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_proto_error() {
+        //test h11
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                let mut by = BytesMut::new();
+                by.put_u8(FERRUM_FRAME_BYTES_TYPE);
+                by.put_u16(5u16);
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                _buf[..8].clone_from_slice(&by);
+                Ok(Some(8))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.borrow_mut().write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                if self.count < 2 {
+                    self.count += 1;
+                    return self.real.borrow_mut().decode_frame();
+                }
+
+                Err(anyhow!("fake error"))
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(MockFerrumProto::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("fake error"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_proto_frame_none() {
+        //test h12
+        struct MockRecvStream {
+            count: i32,
+        }
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                if self.count > 0 {
+                    tokio::time::sleep(Duration::from_millis(10000000)).await;
+                }
+                self.count += 1;
+                let mut by = BytesMut::new();
+                by.put_u8(FERRUM_FRAME_BYTES_TYPE);
+                by.put_u16(5u16);
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                _buf[..8].clone_from_slice(&by);
+                Ok(Some(8))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.borrow_mut().write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                if self.count < 2 {
+                    self.count += 1;
+                    return self.real.borrow_mut().decode_frame();
+                }
+
+                Ok(FerrumFrame::FrameNone)
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(MockFerrumProto::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream { count: 0 }));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token2 = cancel_token.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_token2.cancel();
+        });
+        let res = client.handle_client(cancel_token, 10u64).await;
+        let _ = tokio::join!(task);
+        assert_eq!(res.is_ok(), true);
+        //let err = res.unwrap_err().to_string();
+        //eprintln!("{}", err);
+        // assert_eq!(err.starts_with("no frame"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_proto_frame_str() {
+        //test h13
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                let mut by = BytesMut::new();
+                by.put_u8(FERRUM_FRAME_BYTES_TYPE);
+                by.put_u16(5u16);
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                _buf[..8].clone_from_slice(&by);
+                Ok(Some(8))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.borrow_mut().write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                if self.count < 2 {
+                    self.count += 1;
+                    return self.real.borrow_mut().decode_frame();
+                }
+
+                Ok(FerrumFrame::FrameStr(FerrumFrameStr {
+                    data: "test".to_string(),
+                }))
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(MockFerrumProto::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("str frame"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_proto_tun_err() {
+        //test h14
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                let mut by = BytesMut::new();
+                by.put_u8(FERRUM_FRAME_BYTES_TYPE);
+                by.put_u16(5u16);
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                _buf[..8].clone_from_slice(&by);
+                Ok(Some(8))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.borrow_mut().write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                return self.real.borrow_mut().decode_frame();
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(MockFerrumProto::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+
+        let res = client.handle_client(cancel_token, 10u64).await;
+        assert_eq!(res.is_err(), true);
+        let err = res.unwrap_err().to_string();
+        eprintln!("{}", err);
+        assert_eq!(err.starts_with("fake error"), true);
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_proto_tun_ok() {
+        //test h15
+        struct MockRecvStream {
+            count: i32,
+        }
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                if self.count > 0 {
+                    tokio::time::sleep(Duration::from_millis(10000000)).await;
+                }
+                self.count += 1;
+                let mut by = BytesMut::new();
+                by.put_u8(FERRUM_FRAME_BYTES_TYPE);
+                by.put_u16(5u16);
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                _buf[..8].clone_from_slice(&by);
+                Ok(Some(8))
+            }
+        }
+
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, _buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                Err(anyhow!("fake error"))
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+            buf: Arc<Mutex<BytesMut>>,
+        }
+
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                tokio::time::sleep(Duration::from_millis(10000000)).await;
+
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                self.buf.lock().unwrap().extend_from_slice(_buf);
+                Ok(())
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.borrow_mut().write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                return self.real.borrow_mut().decode_frame();
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        let config = create_config();
+        let certs = create_root_certs(&config).unwrap();
+        let mut client = FerrumClient::new(config, certs);
+        client.proto = Some(Box::new(MockFerrumProto::new(1024)));
+        let proto = client.proto.as_mut().unwrap();
+
+        client.read_stream = Some(Box::new(MockRecvStream { count: 0 }));
+        let buf = Arc::new(Mutex::new(BytesMut::new()));
+        client.tun = Some(Box::new(MockTun {
+            sended: false,
+            buf: buf.clone(),
+        }));
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&12u16.to_be_bytes());
+        proto.write(b"ferrum_open:");
+        proto.write(&[FERRUM_FRAME_STR_TYPE]);
+        proto.write(&24u16.to_be_bytes());
+        proto.write(b"ferrum_tunnel_confirmed:");
+
+        let rc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream { buf: rc.clone() }));
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token2 = cancel_token.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_token2.cancel();
+        });
+        let res = client.handle_client(cancel_token, 10u64).await;
+        let _ = tokio::join!(task);
+        assert_eq!(res.is_ok(), true);
+        assert_eq!(buf.lock().unwrap().to_vec(), vec![0u8, 1, 2, 3, 4]);
     }
 }

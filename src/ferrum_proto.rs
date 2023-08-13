@@ -4,7 +4,14 @@ use tracing::debug;
 
 pub const FERRUM_FRAME_STR_TYPE: u8 = 0x1;
 pub const FERRUM_FRAME_BYTES_TYPE: u8 = 0x2;
-pub struct FerrumProto {
+
+pub trait FerrumProto: Send + Sync {
+    fn write(self: &mut Self, buf: &[u8]);
+    fn decode_frame(self: &mut Self) -> Result<FerrumFrame>;
+    fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes>;
+    fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes>;
+}
+pub struct FerrumProtoDefault {
     read_data: BytesMut,
     read_data_wait_len: usize,
     read_data_type: u8,
@@ -23,19 +30,22 @@ pub enum FerrumFrame {
 }
 pub use FerrumFrame::{FrameBytes, FrameNone, FrameStr};
 
-impl FerrumProto {
+impl FerrumProtoDefault {
     pub fn new(buf_size: usize) -> Self {
-        FerrumProto {
+        FerrumProtoDefault {
             read_data: BytesMut::with_capacity(buf_size),
             read_data_wait_len: 0,
             read_data_type: 0,
         }
     }
-    pub fn write(self: &mut Self, buf: &[u8]) {
+}
+
+impl FerrumProto for FerrumProtoDefault {
+    fn write(self: &mut Self, buf: &[u8]) {
         self.read_data.extend_from_slice(buf);
     }
 
-    pub fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+    fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
         if self.read_data_wait_len == 0 {
             if self.read_data.len() < 3 {
                 return Ok(FrameNone);
@@ -73,7 +83,7 @@ impl FerrumProto {
         }
     }
 
-    pub fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes> {
+    fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes> {
         let bytes_len_bytes = u16::try_from(val.len()).ok().unwrap().to_be_bytes();
         let mut d = BytesMut::with_capacity(1 + val.len() + bytes_len_bytes.len());
         d.put_u8(1u8);
@@ -83,7 +93,7 @@ impl FerrumProto {
         Ok(FerrumFrameBytes { data: d.to_vec() })
     }
 
-    pub fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes> {
+    fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes> {
         let bytes_len_bytes = u16::try_from(val.len()).ok().unwrap().to_be_bytes();
         let mut d = BytesMut::with_capacity(1 + val.len() + bytes_len_bytes.len());
         d.put_u8(FERRUM_FRAME_BYTES_TYPE);
@@ -103,7 +113,7 @@ mod tests {
     use std::time::Duration;
     #[test]
     fn decode_none() {
-        let mut proto = FerrumProto::new(1024);
+        let mut proto = FerrumProtoDefault::new(1024);
         let frame = proto.decode_frame();
         assert_eq!(frame.is_ok(), true);
         let frame = frame.unwrap();
@@ -151,7 +161,7 @@ mod tests {
     }
     #[test]
     fn encode_decode_str() {
-        let mut proto = FerrumProto::new(1024);
+        let mut proto = FerrumProtoDefault::new(1024);
         let frame = proto.encode_frame_str("hello").unwrap();
 
         assert_eq!(frame.data.len(), 8);
@@ -175,7 +185,7 @@ mod tests {
     }
 
     fn encode_decode_bytes() {
-        let mut proto = FerrumProto::new(1024);
+        let mut proto = FerrumProtoDefault::new(1024);
         let frame = proto.encode_frame_bytes(b"hello").unwrap();
 
         assert_eq!(frame.data.len(), 8);

@@ -5,10 +5,9 @@ use anyhow::{anyhow, Result};
 //use async_trait::async_trait;
 
 pub use ferrum_proto::{
-    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FrameBytes, FrameNone, FrameStr,
-    FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
+    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault, FrameBytes,
+    FrameNone, FrameStr, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
-use quinn::{ReadError, WriteError};
 use quinn::{RecvStream, SendStream};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -19,25 +18,27 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait FerrumReadStream: Send + Sync {
-    async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError>;
+    async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error>;
 }
 
 #[async_trait]
 impl FerrumReadStream for RecvStream {
-    async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
-        self.read(buf).await
+    async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+        self.read(buf).await.map_err(|err| anyhow!(err.to_string()))
     }
 }
 
 #[async_trait]
 pub trait FerrumWriteStream: Send + Sync {
-    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), WriteError>;
+    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error>;
 }
 
 #[async_trait]
 impl FerrumWriteStream for SendStream {
-    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), WriteError> {
-        self.write_all(buf).await
+    async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error> {
+        self.write_all(buf)
+            .await
+            .map_err(|err| anyhow!(err.to_string()))
     }
 }
 
@@ -50,7 +51,7 @@ pub struct FerrumStream {}
 impl FerrumStream {
     pub async fn read_next_frame(
         read_buf: &mut Vec<u8>,
-        proto: &mut FerrumProto,
+        proto: &mut dyn FerrumProto,
         read_stream: &mut dyn FerrumReadStream,
         cancel_token: &CancellationToken,
     ) -> Result<FerrumStreamFrame> {
@@ -129,7 +130,7 @@ impl FerrumStream {
     #[allow(unused)]
     pub async fn read_next_frame_str(
         read_buf: &mut Vec<u8>,
-        proto: &mut FerrumProto,
+        proto: &mut dyn FerrumProto,
         read_stream: &mut dyn FerrumReadStream,
         cancel_token: &CancellationToken,
     ) -> Result<FerrumFrameStr> {
@@ -147,7 +148,7 @@ impl FerrumStream {
     #[allow(unused)]
     pub async fn write_str(
         val: &str,
-        proto: &mut FerrumProto,
+        proto: &mut dyn FerrumProto,
         send: &mut dyn FerrumWriteStream,
     ) -> Result<()> {
         let mut frame = proto.encode_frame_str(val)?;
@@ -158,7 +159,7 @@ impl FerrumStream {
     #[allow(unused)]
     pub async fn write_bytes(
         val: &[u8],
-        proto: &mut FerrumProto,
+        proto: &mut dyn FerrumProto,
         send: &mut dyn FerrumWriteStream,
     ) -> Result<()> {
         let mut frame = proto.encode_frame_bytes(val)?;
@@ -175,14 +176,17 @@ mod tests {
     use super::*;
     struct MockRecvStream {
         buf: Vec<u8>,
-        res: Result<Option<usize>, quinn::ReadError>,
+        res: Result<Option<usize>, anyhow::Error>,
     }
 
     #[async_trait]
     impl FerrumReadStream for MockRecvStream {
-        async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
+        async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
             buf.clone_from_slice(&self.buf);
-            self.res.clone()
+            match self.res.as_mut() {
+                Ok(a) => Ok(a.clone()),
+                Err(e) => Err(anyhow!(e.to_string())),
+            }
         }
     }
     #[tokio::test]
@@ -190,7 +194,7 @@ mod tests {
         // test a1
         let read_buf = &mut Vec::<u8>::new();
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
@@ -219,7 +223,7 @@ mod tests {
     async fn read_next_frame_str() {
         // test a2
         let read_buf = &mut Vec::<u8>::new();
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -250,7 +254,7 @@ mod tests {
         // test b1
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -259,7 +263,7 @@ mod tests {
 
         let mut mock_stream = MockRecvStream {
             buf: vec![0, 1, 2, 3, 4],
-            res: Result::Err(ReadError::IllegalOrderedRead),
+            res: Result::Err(anyhow!("fake error")),
         };
 
         let frame =
@@ -275,7 +279,7 @@ mod tests {
         // test b2
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -301,7 +305,7 @@ mod tests {
         //test b3
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
@@ -330,7 +334,7 @@ mod tests {
         //test b4
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -359,7 +363,7 @@ mod tests {
         //test b4
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -385,7 +389,7 @@ mod tests {
         //test d2
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_BYTES_TYPE]);
@@ -412,7 +416,7 @@ mod tests {
         //test d3
         let read_buf = &mut vec![0, 1, 2, 3, 4];
 
-        let proto = &mut FerrumProto::new(1024);
+        let proto = &mut FerrumProtoDefault::new(1024);
         let cancel_token = &CancellationToken::new();
 
         proto.write(&[FERRUM_FRAME_STR_TYPE]);
@@ -430,7 +434,7 @@ mod tests {
 
         match frame {
             Err(_) => unreachable!("impossible"),
-            Ok(a) => {}
+            Ok(_a) => {}
         }
     }
 }

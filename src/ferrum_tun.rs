@@ -1,3 +1,6 @@
+#[path = "common.rs"]
+mod common;
+
 use anyhow::{anyhow, Ok, Result};
 use common::generate_random_string;
 use futures::{SinkExt, StreamExt};
@@ -6,10 +9,17 @@ use bytes::BytesMut;
 use tokio_util::codec::Framed;
 
 use tun::{TunPacket, TunPacketCodec};
-#[path = "common.rs"]
-mod common;
 
-pub struct FerrumTun {
+// we need this for testing
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait FerrumTun {
+    fn get_name(self: &Self) -> &str;
+    async fn read(self: &mut Self) -> Result<FerrumTunFrame>;
+    async fn write(self: &mut Self, buf: &[u8]) -> Result<()>;
+}
+pub struct FerrumTunPosix {
     pub name: String,
     stream: Framed<tun::AsyncDevice, TunPacketCodec>,
     pub frame_bytes: BytesMut,
@@ -18,8 +28,7 @@ pub struct FerrumTun {
 pub struct FerrumTunFrame {
     pub data: BytesMut,
 }
-
-impl FerrumTun {
+impl FerrumTunPosix {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn new(capacity: usize) -> Result<Self>
     where
@@ -34,16 +43,23 @@ impl FerrumTun {
         config.name(devname.clone());
         let dev = tun::create_as_async(&config)?;
 
-        Ok(FerrumTun {
+        Ok(FerrumTunPosix {
             frame_bytes: BytesMut::with_capacity(capacity),
             frame_wait_len: 0,
             name: devname,
             stream: dev.into_framed(),
         })
     }
+}
 
+#[async_trait]
+impl FerrumTun for FerrumTunPosix {
     #[allow(unused)]
-    pub async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+    fn get_name(self: &Self) -> &str {
+        self.name.as_str()
+    }
+    #[allow(unused)]
+    async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
         let res = self.stream.next().await;
         match res {
             None => Err(anyhow!("tun data is empty")),
@@ -62,8 +78,11 @@ impl FerrumTun {
     }
 
     #[allow(unused)]
-    pub async fn write(self: &mut Self, buf: &[u8]) -> Result<(), std::io::Error> {
-        self.stream.send(TunPacket::new(buf.to_vec())).await
+    async fn write(self: &mut Self, buf: &[u8]) -> Result<()> {
+        self.stream
+            .send(TunPacket::new(buf.to_vec()))
+            .await
+            .map_err(|err| anyhow!(err.to_string()))
     }
 }
 
@@ -85,7 +104,7 @@ mod tests {
             return;
         }
 
-        let tun_result = FerrumTun::new(4096);
+        let tun_result = FerrumTunPosix::new(4096);
         if let Err(e) = tun_result {
             eprintln!("create tun failed :{}", e);
             assert_eq!(false, true);
@@ -104,7 +123,7 @@ mod tests {
                 return;
             }
 
-            let tun_result = FerrumTun::new(4096);
+            let tun_result = FerrumTunPosix::new(4096);
             if let Err(e) = tun_result {
                 eprintln!("create tun failed :{}", e);
                 assert_eq!(false, true);
