@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait FerrumReadStream: Send + Sync {
+pub trait FerrumReadStream: Send {
     async fn read_ext(&mut self, buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error>;
 }
 
@@ -29,7 +29,7 @@ impl FerrumReadStream for RecvStream {
 }
 
 #[async_trait]
-pub trait FerrumWriteStream: Send + Sync {
+pub trait FerrumWriteStream: Send {
     async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error>;
 }
 

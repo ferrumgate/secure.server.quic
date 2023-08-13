@@ -5,7 +5,7 @@ use tracing::debug;
 pub const FERRUM_FRAME_STR_TYPE: u8 = 0x1;
 pub const FERRUM_FRAME_BYTES_TYPE: u8 = 0x2;
 
-pub trait FerrumProto: Send + Sync {
+pub trait FerrumProto: Send {
     fn write(self: &mut Self, buf: &[u8]);
     fn decode_frame(self: &mut Self) -> Result<FerrumFrame>;
     fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes>;

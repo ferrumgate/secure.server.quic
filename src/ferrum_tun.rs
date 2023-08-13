@@ -17,7 +17,7 @@ use tun::{TunPacket, TunPacketCodec};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait FerrumTun {
+pub trait FerrumTun: Send {
     fn get_name(self: &Self) -> &str;
     async fn read(self: &mut Self) -> Result<FerrumTunFrame>;
     async fn write(self: &mut Self, buf: &[u8]) -> Result<()>;

@@ -25,14 +25,15 @@ use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
 use ferrum_stream::{
     FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault,
-    FerrumReadStream, FerrumStream, FerrumStreamFrame, FerrumWriteStream, FERRUM_FRAME_BYTES_TYPE,
-    FERRUM_FRAME_STR_TYPE,
+    FerrumReadStream, FerrumStream, FerrumStreamFrame, FerrumWriteStream, FrameBytes, FrameNone,
+    FrameStr, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
-use ferrum_tun::{FerrumTun, FerrumTunPosix};
+use ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
 
 pub use server_config::FerrumServerConfig;
 
 use async_trait::async_trait;
+use bytes::BytesMut;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -48,6 +49,7 @@ pub struct FerrumClient {
     write_stream: Option<Box<dyn FerrumWriteStream>>,
     proto: Option<Box<dyn FerrumProto>>,
     connection: Option<quinn::Connection>,
+    tun: Option<Box<dyn FerrumTun>>,
 }
 impl FerrumClient {
     pub fn close(&mut self) {
@@ -187,6 +189,7 @@ impl FerrumServer {
                     write_stream: None,
                     connection: None,
                     read_buf: Vec::with_capacity(2048),
+                    tun: None,
                 };
                 let res = timeout(
                     Duration::from_millis(options.connect_timeout),
@@ -237,6 +240,22 @@ impl FerrumServer {
         let (send, recv) = connection.accept_bi().await?;
         info!("stream opened {}", connection.remote_address());
         Ok((send, recv, connection))
+    }
+
+    fn create_tun_device(client: &mut FerrumClient) -> Result<()> {
+        if client.tun.is_some() {
+            return Ok(());
+        }
+        let tun = FerrumTunPosix::new(4096).map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        client.tun = Some(Box::new(tun));
+        eprintln!(
+            "ferrum_tunnel_opened: {}",
+            client.tun.as_ref().unwrap().get_name()
+        );
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -331,18 +350,14 @@ impl FerrumServer {
             }
         }
         debug!("authentication completed for {}", client.client_ip);
-        let ftun = FerrumTunPosix::new(2000).map_err(|e| {
-            error!("tun create failed: {}", e);
-            e
-        })?;
-        info!("tun opened: {}", ftun.name);
+        FerrumServer::create_tun_device(client)?;
 
         let mut frame = client
             .proto
             .as_ref()
             .unwrap()
             .encode_frame_str("ferrum_tunnel_confirmed:")?;
-
+        //test r4
         client
             .write_stream
             .as_mut()
@@ -352,81 +367,110 @@ impl FerrumServer {
 
         //output
 
-        let _array = &mut [0u8; 1024];
+        // let _array = &mut [0u8; 1024];
 
         //let mut stdout = tokio::io::stderr();
-
+        let mut last_error: Option<anyhow::Error> = None;
         loop {
             debug!("waiting for input");
             select! {
-                _=ctoken1.cancelled()=>{
+                _= ctoken1.cancelled()=>{
+
                     warn!("cancelled");
+                    //last_error=Some(anyhow!("wait canceled"));
                     break;
                 },
-             /*    tunresp=ftun.read_frame()=>{
+                tunresp=client.tun.as_mut().unwrap().read()=>{//tun interface readed
 
                     match tunresp {
+
                         Err(e) => {
+                            //test h6
                             error!("tun read error {}", e);
+                            last_error=Some(e);
                             break;
                         }
                         Ok(data)=>{
+                            //test h7
                             debug!("readed from tun {} and streamed",data.data.len());
-                            let res=send.write_all(&data.data).await;
-                            if let Err(e)= res{
-                                error!("send write error {}", e);
-                                break;
+                            let res=FerrumStream::write_bytes(data.data.as_ref(),
+                            client.proto.as_mut().unwrap().as_mut(),
+                            client.write_stream.as_mut().unwrap().as_mut()).await;
+
+                            if let Err(e) =res {
+                                //test h8
+                                    error!("stream write error {}", e);
+                                    last_error=Some(e);
+                                    break;
                             }
                         }
                     }
 
                 },
-                resp = recv.read(array)=>{
+                resp = client.read_stream.as_mut().unwrap().as_mut().read_ext(client.read_buf.as_mut())=>{
 
                     match resp{
                         Err(e) => {
+                            //test h9
                             error!("stream read error {}", e);
-
+                            last_error=Some(e);
                             break;
                         },
                         Ok(response) =>{
 
                             match response {
-                                Some(0) => {
-
-                                    info!("stream closed");
+                                None | Some(0) => {
+                                    //test h10
+                                    info!("stream finished");
+                                    last_error=Some(anyhow!("stream closed"));
                                     break;
-                                }
+                                },
                                 Some(data) => {
                                     debug!("data received from stream {}", data);
-                                    //println!("Array {:?}", &array[..data]);
-                                    ftun.frame_bytes.extend_from_slice(&array[..data]);
-                                    debug!("remaining data len is {}",ftun.frame_bytes.len());
-                                    let mut break_loop=false;
-                                    loop{
-                                        let res_frame=ftun.parse_frame();
-                                        match res_frame {
+                                    client.proto.as_mut().unwrap().write(&client.read_buf[..data]);
+
+
+                                    let mut break_main_loop=true;
+                                    loop
+                                    {
+                                        let res=client.proto.as_mut().unwrap().decode_frame();
+                                        match res{
                                             Err(e) =>{
+                                                //test h11
                                                 error!("tun parse frame failed {}", e);
-                                                break_loop=true;
+                                                last_error=Some(e);
                                                 break;
                                             }
-                                            Ok(res_data)=>{
-                                                match res_data {
-                                                    None=> {
+                                            Ok(res_frame)=>{
+                                                match res_frame {
+                                                    FrameNone=> {//no frame detected, follow stream
+                                                        //test h12
+                                                        //last_error=Some(anyhow!("no frame"));
+                                                        break_main_loop=false;
                                                         break;
                                                     },
-                                                    Some(res_data)=>{
+                                                    FrameStr(_)=>{
+                                                        //test h13
+                                                        warn!("not valid frame");
+                                                        last_error=Some(anyhow!("str frame"));
+                                                        break;
+
+                                                    },
+                                                    FrameBytes(res_data)=>{
 
                                                         debug!("write tun packet size is: {}",res_data.data.len());
-                                                        let res=ftun.write(&res_data.data).await;
+                                                        let res=client.tun.as_mut().unwrap().write(&res_data.data).await;
                                                         match res{
                                                             Err(e) => {
+                                                                //test h14
                                                                 error!("tun write failed {}", e);
-                                                                break_loop=true;
+                                                                last_error=Some(e);
                                                                 break;
                                                             },
-                                                            _=>{}
+                                                            _=>{
+                                                                //test h15
+                                                                break_main_loop=false;
+                                                            }
                                                         }
 
                                                     }
@@ -434,27 +478,32 @@ impl FerrumServer {
                                             }
                                         }
                                     }
-                                 if break_loop {//error occured
+                                 if break_main_loop {//error occured
                                     break;
                                  }
                                 }
-                                None => {
-                                    info!("stream finished");
-                                    break;
-                                }
+
                             }
                         }
                     }
                 }
-            */
             }
         }
 
         //let _ = tokio::io::stdout().flush().await;
 
-        //debug!("connection closed");
         debug!("closing everything");
-        Ok(())
+        if last_error.is_none() {
+            return Ok(());
+        } else {
+            let err = last_error.unwrap();
+            if cfg!(debug_assertions) {
+                eprintln!("{}", err);
+            } else {
+                debug!("{}", err);
+            }
+            return Err(err);
+        }
     }
 
     #[allow(unused)]
@@ -486,6 +535,7 @@ mod tests {
             redis_pass: None,
             redis_user: None,
             write_stream: None,
+            tun: None,
         }
     }
     #[tokio::test]
@@ -833,7 +883,7 @@ mod tests {
         client.proto.as_mut().unwrap().write(b"hello");
 
         let write_stream2 = rc.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut redis = RedisClient::new("127.0.0.1:6379", None, None);
             let _res = redis.connect().await.map_err(|_err| {
                 panic!("redis cannot connect");
@@ -854,8 +904,138 @@ mod tests {
         });
 
         let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        tokio::join!(task);
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("could not authenticate"), true);
+    }
+
+    #[tokio::test]
+    async fn test_server_handle_client_ferrum_tunnel_confirmed() {
+        //test r4
+
+        struct MockRecvStream {}
+        #[async_trait]
+        impl FerrumReadStream for MockRecvStream {
+            async fn read_ext(&mut self, _buf: &mut [u8]) -> Result<Option<usize>, anyhow::Error> {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                Ok(Some(0))
+            }
+        }
+        struct MockSendStream {
+            buf: Arc<Mutex<Vec<u8>>>,
+            count: i32,
+        }
+
+        #[async_trait]
+        impl FerrumWriteStream for MockSendStream {
+            async fn write_ext(&mut self, buf: &mut [u8]) -> Result<(), anyhow::Error> {
+                self.buf.lock().unwrap().extend_from_slice(buf);
+                self.count += 1;
+                if self.count > 1 {
+                    Err(anyhow!("stop here"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        struct MockFerrumProto {
+            real: FerrumProtoDefault,
+            count: i32,
+        }
+        impl MockFerrumProto {
+            pub fn new(buf_size: usize) -> Self {
+                MockFerrumProto {
+                    real: FerrumProtoDefault::new(buf_size),
+                    count: 0,
+                }
+            }
+        }
+        impl FerrumProto for MockFerrumProto {
+            fn write(self: &mut Self, buf: &[u8]) {
+                self.real.write(buf);
+            }
+            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+                return self.real.decode_frame();
+            }
+            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_str(_val)
+            }
+            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+                self.real.encode_frame_bytes(_val)
+            }
+        }
+
+        struct MockTun {
+            sended: bool,
+        }
+        #[async_trait]
+        impl FerrumTun for MockTun {
+            fn get_name(self: &Self) -> &str {
+                "mocktun"
+            }
+            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+                if self.sended {
+                    tokio::time::sleep(Duration::from_millis(10000000)).await;
+                }
+                let mut by = BytesMut::new();
+                by.extend_from_slice(&[0, 1, 2, 3, 4]);
+                self.sended = true;
+                Ok(FerrumTunFrame { data: by })
+            }
+            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut client = create_client();
+        let cancel_token = CancellationToken::new();
+        client.read_stream = Some(Box::new(MockRecvStream {}));
+        client.proto = Some(Box::new(MockFerrumProto::new(2048)));
+        client.redis_host = "127.0.0.1:6379".to_string();
+        let arc = Arc::new(Mutex::new(Vec::<u8>::new()));
+        client.write_stream = Some(Box::new(MockSendStream {
+            count: 0,
+            buf: arc.clone(),
+        }));
+        client.tun = Some(Box::new(MockTun { sended: false }));
+        client
+            .proto
+            .as_mut()
+            .unwrap()
+            .write(&[FERRUM_FRAME_STR_TYPE]);
+        client.proto.as_mut().unwrap().write(&5u16.to_be_bytes());
+        client.proto.as_mut().unwrap().write(b"hello");
+
+        let write_stream2 = arc.clone();
+        let task = tokio::spawn(async move {
+            let mut redis = RedisClient::new("127.0.0.1:6379", None, None);
+            let _res = redis.connect().await.map_err(|_err| {
+                panic!("redis cannot connect");
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let msg = String::from_utf8(write_stream2.lock().unwrap().to_vec()).unwrap();
+            let items: Vec<&str> = msg.split(' ').collect();
+            let tunnel_id = items[1];
+            write_stream2.lock().unwrap().clear();
+            let res = redis
+                .publish(
+                    format!("/tunnel/authentication/{}", tunnel_id).as_str(),
+                    "ok:",
+                )
+                .await
+                .map_err(|err| {
+                    panic!("redis publish failed");
+                });
+        });
+
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let _ = tokio::join!(task);
+        assert_eq!(result.is_err(), true);
+        let err_msg = result.unwrap_err().to_string();
+        let msg = String::from_utf8(arc.lock().unwrap().to_vec()[3..].to_vec()).unwrap();
+        assert_eq!(msg, "ferrum_tunnel_confirmed:");
+        assert_eq!(err_msg.starts_with("stop here"), true);
     }
 }
