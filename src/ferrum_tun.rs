@@ -2,7 +2,10 @@
 mod common;
 
 use anyhow::{anyhow, Ok, Result};
-use common::generate_random_string;
+pub use common::{
+    generate_random_string, get_log_level, handle_as_stdin, make_client_endpoint,
+    make_server_endpoint,
+};
 use futures::{SinkExt, StreamExt};
 
 use bytes::BytesMut;

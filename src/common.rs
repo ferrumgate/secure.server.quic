@@ -115,7 +115,7 @@ pub async fn handle_as_stdin(
     let mut reader = BufReader::with_capacity(2048, stdin);
     let mut line = String::new();
     //output
-    let mut array: Vec<u8> = vec![0; 1024];
+    let mut array: Vec<u8> = vec![0; 2048];
     let mut stdout = tokio::io::stdout();
 
     loop {

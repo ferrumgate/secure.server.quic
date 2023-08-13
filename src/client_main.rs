@@ -48,7 +48,7 @@ pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
         return Err(anyhow!("not resolved"));
     }
     let sockaddr = ip.unwrap();
-    let just_hostname: Vec<_> = opt.host.split(":").collect();
+    let just_hostname: Vec<_> = opt.host.split(':').collect();
     //let port = sockaddr.port();
     let config: FerrumClientConfig = FerrumClientConfig {
         host: just_hostname[0].to_string(),

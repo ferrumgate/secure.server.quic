@@ -115,7 +115,7 @@ impl FerrumClient {
             read_stream: None,
             write_stream: None,
             proto: None,
-            read_buf: vec![0; 1024],
+            read_buf: vec![0; 2048],
             tun: None,
         };
 
@@ -220,7 +220,7 @@ impl FerrumClient {
     pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
         let mut stderr = tokio::io::stderr();
 
-        let frame = FerrumStream::read_next_frame_str(
+        let mut frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
             self.proto.as_mut().unwrap().as_mut(),
             self.read_stream.as_mut().unwrap().as_mut(),
@@ -232,11 +232,13 @@ impl FerrumClient {
             error!("protocol error {}", err);
             err
         })?;
+
         let res = stderr.write_all(frame.data.as_bytes()).await;
         if let Err(e) = res {
             error!("stdout write failed {}", e);
             return Err(e.into());
         }
+        let _res = stderr.write_all(b"\n").await;
         //test a2
         return Ok(frame.data);
     }
@@ -263,6 +265,7 @@ impl FerrumClient {
             error!("stdout write failed {}", e);
             return Err(e.into());
         }
+        let _res = stderr.write_all(b"\n").await;
         //test b2
         return Ok(frame.data);
     }
@@ -1196,7 +1199,7 @@ mod tests {
         }
         impl FerrumProto for MockFerrumProto {
             fn write(self: &mut Self, buf: &[u8]) {
-                self.real.borrow_mut().write(buf);
+                self.real.write(buf);
             }
             fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
                 if self.count < 2 {
@@ -1309,12 +1312,12 @@ mod tests {
         }
         impl FerrumProto for MockFerrumProto {
             fn write(self: &mut Self, buf: &[u8]) {
-                self.real.borrow_mut().write(buf);
+                self.real.write(buf);
             }
             fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
                 if self.count < 2 {
                     self.count += 1;
-                    return self.real.borrow_mut().decode_frame();
+                    return self.real.decode_frame();
                 }
 
                 Ok(FerrumFrame::FrameNone)
@@ -1421,12 +1424,12 @@ mod tests {
         }
         impl FerrumProto for MockFerrumProto {
             fn write(self: &mut Self, buf: &[u8]) {
-                self.real.borrow_mut().write(buf);
+                self.real.write(buf);
             }
             fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
                 if self.count < 2 {
                     self.count += 1;
-                    return self.real.borrow_mut().decode_frame();
+                    return self.real.decode_frame();
                 }
 
                 Ok(FerrumFrame::FrameStr(FerrumFrameStr {
@@ -1530,10 +1533,10 @@ mod tests {
         }
         impl FerrumProto for MockFerrumProto {
             fn write(self: &mut Self, buf: &[u8]) {
-                self.real.borrow_mut().write(buf);
+                self.real.write(buf);
             }
             fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
-                return self.real.borrow_mut().decode_frame();
+                return self.real.decode_frame();
             }
             fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
@@ -1641,10 +1644,10 @@ mod tests {
         }
         impl FerrumProto for MockFerrumProto {
             fn write(self: &mut Self, buf: &[u8]) {
-                self.real.borrow_mut().write(buf);
+                self.real.write(buf);
             }
             fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
-                return self.real.borrow_mut().decode_frame();
+                return self.real.decode_frame();
             }
             fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)

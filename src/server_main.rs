@@ -170,3 +170,38 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_config() {
+        let opt: ServerOpt = ServerOpt {
+            keylog: false,
+            cert: None,
+            gateway_id: "gateway_id".to_string(),
+            key: None,
+            listen: Some("127.0.0.1:543".to_string()),
+            port: 8443,
+            redis_host: "localhost".to_string(),
+            redis_pass: None,
+            redis_user: None,
+            stateless_retry: false,
+
+            stdinout: false,
+            loglevel: "debug".to_string(),
+        };
+
+        let config_result1 = parse_config(opt);
+        assert_eq!(config_result1.is_err(), false);
+        let config1 = config_result1.unwrap();
+        assert_eq!(config1.cert, None);
+        assert_eq!(config1.gateway_id, "gateway_id");
+        assert_eq!(config1.listen, "127.0.0.1:543".parse().unwrap());
+        assert_eq!(config1.loglevel, "debug");
+        assert_eq!(config1.redis_host, "localhost");
+        assert_eq!(config1.redis_user, None);
+        assert_eq!(config1.redis_pass, None);
+    }
+}
