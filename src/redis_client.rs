@@ -20,8 +20,8 @@ impl RedisClient {
     pub fn new(host: &str, username: Option<String>, password: Option<String>) -> Self {
         RedisClient {
             host: host.to_string(),
-            username: username,
-            password: password,
+            username,
+            password,
             client: None,
             connection: None,
         }

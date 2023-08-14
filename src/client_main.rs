@@ -64,6 +64,8 @@ pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
 }
 
 fn main() {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    println!("version: {}", VERSION);
     let _rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
