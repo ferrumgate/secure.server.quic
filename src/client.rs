@@ -153,7 +153,7 @@ impl FerrumClient {
 
         let start = Instant::now();
         let host = self.options.host.as_str();
-        let remote = self.options.ip.clone();
+        let remote = self.options.ip;
 
         info!("connecting to {host} at {remote}");
         let connection = endpoint
@@ -190,12 +190,11 @@ impl FerrumClient {
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        let result = timeout(
+        timeout(
             Duration::from_millis(self.options.connect_timeout),
             self.internal_connect(),
         )
-        .await?;
-        result
+        .await?
     }
     pub fn close(&mut self) {
         if self.connection.is_some() {
@@ -246,7 +245,7 @@ impl FerrumClient {
         let _res = stderr.write_all(b"\n").await;
         let _res = stderr.flush().await;
         //test a2
-        return Ok(frame.data);
+        Ok(frame.data)
     }
 
     async fn handle_open_confirmed(
@@ -258,7 +257,7 @@ impl FerrumClient {
             self.read_buf.as_mut(),
             self.proto.as_mut().unwrap().as_mut(),
             self.read_stream.as_mut().unwrap().as_mut(),
-            &cancel_token,
+            cancel_token,
         )
         .await
         .map_err(|err| {
@@ -274,7 +273,7 @@ impl FerrumClient {
         let _res = stderr.write_all(b"\n").await;
         let _res = stderr.flush().await;
         //test b2
-        return Ok(frame.data);
+        Ok(frame.data)
     }
     fn create_tun_device(self: &mut Self) -> Result<()> {
         if self.tun.is_some() {
@@ -473,7 +472,7 @@ impl FerrumClient {
         //debug!("connection closed");
         debug!("closing everything");
         if last_error.is_none() {
-            return Ok(());
+            Ok(())
         } else {
             let err = last_error.unwrap();
             if cfg!(debug_assertions) {
@@ -481,7 +480,7 @@ impl FerrumClient {
             } else {
                 debug!("{}", err);
             }
-            return Err(err);
+            Err(err)
         }
     }
 }

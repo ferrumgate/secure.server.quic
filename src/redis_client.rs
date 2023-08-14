@@ -61,7 +61,7 @@ impl RedisClient {
         let mut pubsub_stream = pubsub.on_message();
         let pubsub_msg = tokio::time::timeout(timeout, pubsub_stream.next()).await?;
 
-        if let None = pubsub_msg {
+        if pubsub_msg.is_none() {
             return Ok("".to_string());
         }
 
@@ -85,7 +85,7 @@ impl RedisClient {
         //int32_t result= redis_execute(pamh,redis,"hset /tunnel/id/%s clientIp %s id %s gatewayId %s type %s",tunnel_id,client_ip,tunnel_id,gateway_id,"ssh");
         // result = redis_execute(pamh, redis, "pexpire /tunnel/id/%s 300000", tunnel_id);
         let mut connection = self.connection.as_mut().unwrap();
-        let _ = redis::pipe()
+        redis::pipe()
             .atomic()
             .cmd("hset")
             .arg(format!("/tunnel/id/{}", tunnel_id))

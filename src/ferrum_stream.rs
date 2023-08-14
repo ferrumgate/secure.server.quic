@@ -144,10 +144,10 @@ impl FerrumStream {
         match msg {
             FerrumStreamFrame::FrameBytes(_) => {
                 // test d2
-                return Err(anyhow!("frame is byte"));
+                Err(anyhow!("frame is byte"))
             }
             // test d3
-            FerrumStreamFrame::FrameStr(a) => return Ok(a),
+            FerrumStreamFrame::FrameStr(a) => Ok(a),
         }
     }
 

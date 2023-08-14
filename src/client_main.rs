@@ -4,9 +4,9 @@ use anyhow::{anyhow, Result};
 
 use clap::Parser;
 
+use crate::common::get_log_level;
 use client::FerrumClient;
 use client::FerrumClientConfig;
-use common::get_log_level;
 use tokio::{select, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -109,7 +109,7 @@ async fn run(options: FerrumClientConfig) -> Result<()> {
     let roots = FerrumClient::create_root_certs(&options)?;
 
     let mut client: FerrumClient = FerrumClient::new(options, roots);
-    let _ = client.connect().await.map_err(|err| {
+    client.connect().await.map_err(|err| {
         error!("could not connect {}", err);
         err
     })?;

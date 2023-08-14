@@ -73,7 +73,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 }
 
 #[allow(dead_code)]
-pub fn get_log_level(level: &String) -> Level {
+pub fn get_log_level(level: &str) -> Level {
     if level.to_ascii_lowercase() == "trace" {
         return Level::TRACE;
     }
@@ -90,7 +90,7 @@ pub fn get_log_level(level: &String) -> Level {
         return Level::ERROR;
     }
 
-    return Level::INFO;
+    Level::INFO
 }
 #[allow(dead_code)]
 pub fn generate_random_string(len: usize) -> String {

@@ -1,5 +1,5 @@
 #[path = "common.rs"]
-mod common;
+pub mod common;
 #[path = "ferrum_tun.rs"]
 mod ferrum_tun;
 #[path = "redis_client.rs"]
@@ -490,7 +490,7 @@ impl FerrumServer {
 
         debug!("closing everything");
         if last_error.is_none() {
-            return Ok(());
+            Ok(())
         } else {
             let err = last_error.unwrap();
             if cfg!(debug_assertions) {
@@ -498,7 +498,7 @@ impl FerrumServer {
             } else {
                 debug!("{}", err);
             }
-            return Err(err);
+            Err(err)
         }
     }
 
