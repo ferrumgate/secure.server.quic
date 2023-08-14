@@ -11,7 +11,7 @@ mod ferrum_stream;
 #[path = "server_config.rs"]
 mod server_config;
 
-use std::{fs, sync::Arc, sync::Mutex, time::Duration};
+use std::{fs, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -24,16 +24,13 @@ use rustls::{Certificate, PrivateKey};
 use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
 use ferrum_stream::{
-    FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault,
-    FerrumReadStream, FerrumStream, FerrumStreamFrame, FerrumWriteStream, FrameBytes, FrameNone,
-    FrameStr, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
+    FerrumProto, FerrumProtoDefault, FerrumReadStream, FerrumStream, FerrumStreamFrame,
+    FerrumWriteStream, FrameBytes, FrameNone, FrameStr,
 };
-use ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
+use ferrum_tun::{FerrumTun, FerrumTunPosix};
 
 pub use server_config::FerrumServerConfig;
 
-use async_trait::async_trait;
-use bytes::BytesMut;
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -188,7 +185,7 @@ impl FerrumServer {
                     read_stream: None,
                     write_stream: None,
                     connection: None,
-                    read_buf: Vec::with_capacity(2048),
+                    read_buf: vec![0u8; 1600],
                     tun: None,
                 };
                 let res = timeout(
@@ -238,7 +235,7 @@ impl FerrumServer {
         // Each stream initiated by the client constitutes a new request.
 
         let (send, recv) = connection.accept_bi().await?;
-        info!("stream opened {}", connection.remote_address());
+        debug!("stream opened {}", connection.remote_address());
         Ok((send, recv, connection))
     }
 
@@ -517,12 +514,14 @@ impl FerrumServer {
 #[cfg(test)]
 mod tests {
 
-    use std::{fs::create_dir, net::ToSocketAddrs, rc::Rc};
-
-    use bytes::{Buf, BufMut, Bytes};
-    use clap::Parser;
-
     use super::*;
+    use async_trait::async_trait;
+    use bytes::BytesMut;
+    use ferrum_stream::{
+        FerrumFrame, FerrumFrameBytes, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
+    };
+    use ferrum_tun::FerrumTunFrame;
+    use std::sync::Mutex;
 
     fn create_client() -> FerrumClient {
         FerrumClient {
@@ -554,13 +553,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -603,13 +600,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -653,13 +648,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -712,13 +705,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -771,13 +762,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -842,13 +831,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -893,19 +880,19 @@ mod tests {
             let msg = String::from_utf8(write_stream2.lock().unwrap().to_vec()).unwrap();
             let items: Vec<&str> = msg.split(' ').collect();
             let tunnel_id = items[1];
-            let res = redis
+            let _res = redis
                 .publish(
                     format!("/tunnel/authentication/{}", tunnel_id).as_str(),
                     "ok2:",
                 )
                 .await
-                .map_err(|err| {
+                .map_err(|_err| {
                     panic!("redis publish failed");
                 });
         });
 
         let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
-        tokio::join!(task);
+        let _ = tokio::join!(task);
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("could not authenticate"), true);
@@ -943,13 +930,11 @@ mod tests {
 
         struct MockFerrumProto {
             real: FerrumProtoDefault,
-            count: i32,
         }
         impl MockFerrumProto {
             pub fn new(buf_size: usize) -> Self {
                 MockFerrumProto {
                     real: FerrumProtoDefault::new(buf_size),
-                    count: 0,
                 }
             }
         }
@@ -1020,13 +1005,13 @@ mod tests {
             let items: Vec<&str> = msg.split(' ').collect();
             let tunnel_id = items[1];
             write_stream2.lock().unwrap().clear();
-            let res = redis
+            let _res = redis
                 .publish(
                     format!("/tunnel/authentication/{}", tunnel_id).as_str(),
                     "ok:",
                 )
                 .await
-                .map_err(|err| {
+                .map_err(|_err| {
                     panic!("redis publish failed");
                 });
         });

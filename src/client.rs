@@ -115,7 +115,7 @@ impl FerrumClient {
             read_stream: None,
             write_stream: None,
             proto: None,
-            read_buf: vec![0; 2048],
+            read_buf: vec![0; 1600],
             tun: None,
         };
 
@@ -162,12 +162,8 @@ impl FerrumClient {
             .map_err(|e| anyhow!("failed to connect: {}", e))?;
 
         info!("connected at {:?}", start.elapsed());
-        let (mut send, recv) = connection.open_bi().await?;
-        let mut protocol = FerrumProtoDefault::new(32);
-
-        //protocol starting
-        debug!("sending hello msg");
-        FerrumStream::write_str("hello", protocol.borrow_mut(), send.borrow_mut()).await?; //write hello to server for protocol starting
+        let (send, recv) = connection.open_bi().await?;
+        let protocol = FerrumProtoDefault::new(1600);
 
         if self.options.rebind {
             let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
@@ -180,8 +176,16 @@ impl FerrumClient {
         self.read_stream = Some(Box::new(recv));
         self.write_stream = Some(Box::new(send));
         self.proto = Some(Box::new(protocol));
-        info!("stream opened");
+        debug!("stream opened");
 
+        FerrumStream::write_str(
+            "hello",
+            self.proto.as_mut().unwrap().as_mut(),
+            self.write_stream.as_mut().unwrap().as_mut(),
+        )
+        .await?; //write hello to server for protocol starting
+                 //protocol starting
+        debug!("sending hello msg");
         Ok(())
     }
 
@@ -221,7 +225,7 @@ impl FerrumClient {
     pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
         let mut stderr = tokio::io::stderr();
 
-        let mut frame = FerrumStream::read_next_frame_str(
+        let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
             self.proto.as_mut().unwrap().as_mut(),
             self.read_stream.as_mut().unwrap().as_mut(),
@@ -240,6 +244,7 @@ impl FerrumClient {
             return Err(e.into());
         }
         let _res = stderr.write_all(b"\n").await;
+        let _res = stderr.flush().await;
         //test a2
         return Ok(frame.data);
     }
@@ -267,6 +272,7 @@ impl FerrumClient {
             return Err(e.into());
         }
         let _res = stderr.write_all(b"\n").await;
+        let _res = stderr.flush().await;
         //test b2
         return Ok(frame.data);
     }

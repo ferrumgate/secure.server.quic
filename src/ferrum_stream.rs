@@ -9,7 +9,7 @@ pub use ferrum_proto::{
     FrameNone, FrameStr, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
 };
 use quinn::{RecvStream, SendStream};
-use tokio::{io::AsyncWriteExt, select};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -45,7 +45,6 @@ impl FerrumWriteStream for SendStream {
         self.write_all(buf)
             .await
             .map_err(|err| anyhow!(err.to_string()))
-        //self.flush().await.map_err(|err| anyhow!(err.to_string()))?;
     }
 }
 
