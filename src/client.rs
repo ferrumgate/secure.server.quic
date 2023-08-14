@@ -3,14 +3,6 @@
 #[path = "client_config.rs"]
 mod client_config;
 
-#[path = "common.rs"]
-mod common;
-#[path = "ferrum_tun.rs"]
-mod ferrum_tun;
-
-#[path = "ferrum_stream.rs"]
-mod ferrum_stream;
-
 use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
@@ -29,9 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::common::{get_log_level, handle_as_stdin};
+use crate::ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
 pub use client_config::FerrumClientConfig;
-use common::{get_log_level, handle_as_stdin};
-use ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
 use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -44,7 +36,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use webpki_roots::TLS_SERVER_ROOTS;
 
-use ferrum_stream::{
+use crate::ferrum_stream::{
     FerrumFrame,
     FerrumFrame::{FrameBytes, FrameNone, FrameStr},
     FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault, FerrumReadStream,
@@ -126,7 +118,10 @@ impl FerrumClient {
                 .set_certificate_verifier(SkipServerVerification::new());
         }
 
-        client.crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+        client.crypto.alpn_protocols = crate::common::ALPN_QUIC_HTTP
+            .iter()
+            .map(|&x| x.into())
+            .collect();
         if client.options.keylog {
             client.crypto.key_log = Arc::new(rustls::KeyLogFile::new());
         }
@@ -221,7 +216,7 @@ impl FerrumClient {
             self.handle_client(cancel_token, 5000).await
         }
     }
-    pub async fn handle_open(self: &mut Self, cancel_token: CancellationToken) -> Result<String> {
+    pub async fn handle_open(&mut self, cancel_token: CancellationToken) -> Result<String> {
         let mut stderr = tokio::io::stderr();
 
         let frame = FerrumStream::read_next_frame_str(
@@ -248,10 +243,7 @@ impl FerrumClient {
         Ok(frame.data)
     }
 
-    async fn handle_open_confirmed(
-        self: &mut Self,
-        cancel_token: &CancellationToken,
-    ) -> Result<String> {
+    async fn handle_open_confirmed(&mut self, cancel_token: &CancellationToken) -> Result<String> {
         let mut stderr = tokio::io::stderr();
         let frame = FerrumStream::read_next_frame_str(
             self.read_buf.as_mut(),
@@ -275,7 +267,7 @@ impl FerrumClient {
         //test b2
         Ok(frame.data)
     }
-    fn create_tun_device(self: &mut Self) -> Result<()> {
+    fn create_tun_device(&mut self) -> Result<()> {
         if self.tun.is_some() {
             return Ok(());
         }
@@ -293,7 +285,7 @@ impl FerrumClient {
 
     #[allow(dead_code)]
     async fn handle_client(
-        self: &mut Self,
+        &mut self,
         cancel_token: CancellationToken,
         timeout_ms: u64,
     ) -> Result<()> {
@@ -744,13 +736,13 @@ mod tests {
         struct MockTun {}
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 Err(anyhow!("fake error"))
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -809,10 +801,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 if self.sended {
                     tokio::time::sleep(Duration::from_millis(10000000)).await;
                 }
@@ -821,7 +813,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -889,10 +881,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 if self.sended {
                     tokio::time::sleep(Duration::from_millis(10000000)).await;
                 }
@@ -901,7 +893,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -960,10 +952,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -971,7 +963,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1030,10 +1022,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1041,7 +1033,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1100,10 +1092,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1111,7 +1103,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1175,10 +1167,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1186,7 +1178,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1204,10 +1196,10 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 if self.count < 2 {
                     self.count += 1;
                     return self.real.borrow_mut().decode_frame();
@@ -1215,10 +1207,10 @@ mod tests {
 
                 Err(anyhow!("fake error"))
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -1288,10 +1280,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1299,7 +1291,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1317,10 +1309,10 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 if self.count < 2 {
                     self.count += 1;
                     return self.real.decode_frame();
@@ -1328,10 +1320,10 @@ mod tests {
 
                 Ok(FerrumFrame::FrameNone)
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -1400,10 +1392,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1411,7 +1403,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }
@@ -1429,10 +1421,10 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 if self.count < 2 {
                     self.count += 1;
                     return self.real.decode_frame();
@@ -1442,10 +1434,10 @@ mod tests {
                     data: "test".to_string(),
                 }))
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -1509,10 +1501,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1520,7 +1512,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Err(anyhow!("fake error"))
             }
         }
@@ -1538,16 +1530,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -1619,10 +1611,10 @@ mod tests {
 
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 tokio::time::sleep(Duration::from_millis(10000000)).await;
 
                 let mut by = BytesMut::new();
@@ -1630,7 +1622,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 self.buf.lock().unwrap().extend_from_slice(_buf);
                 Ok(())
             }
@@ -1649,16 +1641,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }

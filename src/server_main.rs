@@ -4,18 +4,16 @@ use anyhow::{anyhow, Result};
 
 use clap::Parser;
 
-use server::FerrumServer;
+use ferrum::server::FerrumServer;
 
 use tokio::select;
 use tokio::signal::{unix::signal, unix::SignalKind};
 
-use common::get_log_level;
+use ferrum::common::get_log_level;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-mod common;
-mod server;
-use server::FerrumServerConfig;
+use ferrum::server::FerrumServerConfig;
 
 #[derive(Parser, Debug)]
 #[clap(name = "server")]

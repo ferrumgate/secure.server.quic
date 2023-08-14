@@ -1,12 +1,5 @@
-#[path = "common.rs"]
-pub mod common;
-#[path = "ferrum_tun.rs"]
-mod ferrum_tun;
 #[path = "redis_client.rs"]
 mod redis_client;
-
-#[path = "ferrum_stream.rs"]
-mod ferrum_stream;
 
 #[path = "server_config.rs"]
 mod server_config;
@@ -15,15 +8,15 @@ use std::{fs, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 
-use common::{generate_random_string, handle_as_stdin};
+use crate::common::{generate_random_string, handle_as_stdin};
 
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
 
-use ferrum_stream::{
+use crate::ferrum_stream::{
     FerrumProto, FerrumProtoDefault, FerrumReadStream, FerrumStream, FerrumStreamFrame,
     FerrumWriteStream, FrameBytes, FrameNone, FrameStr,
 };
-use ferrum_tun::{FerrumTun, FerrumTunPosix};
+use crate::ferrum_tun::{FerrumTun, FerrumTunPosix};
 use redis_client::RedisClient;
 use rustls::{Certificate, PrivateKey};
 
@@ -129,7 +122,10 @@ impl FerrumServer {
             .with_safe_defaults()
             .with_no_client_auth()
             .with_single_cert(certs.certs, certs.key)?;
-        server_crypto.alpn_protocols = common::ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+        server_crypto.alpn_protocols = crate::common::ALPN_QUIC_HTTP
+            .iter()
+            .map(|&x| x.into())
+            .collect();
         if options.keylog {
             server_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
         }
@@ -148,10 +144,7 @@ impl FerrumServer {
         ))));
 
         let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
-        Ok(FerrumServer {
-            options: options,
-            endpoint: endpoint,
-        })
+        Ok(FerrumServer { options, endpoint })
     }
 
     #[allow(unused)]
@@ -159,7 +152,7 @@ impl FerrumServer {
         create_certs_chain(option)
     }
 
-    pub async fn listen(self: &Self, cancel_token: CancellationToken) {
+    pub async fn listen(&self, cancel_token: CancellationToken) {
         info!("starting listening on {}", self.options.listen);
         let is_stdin_out = self.options.stdinout;
         let cancel_token = cancel_token.clone();
@@ -503,7 +496,7 @@ impl FerrumServer {
     }
 
     #[allow(unused)]
-    pub fn close(self: &Self) {
+    pub fn close(&self) {
         self.endpoint.wait_idle();
         self.endpoint.close(VarInt::from_u32(0_u32), b"close");
     }
@@ -513,12 +506,12 @@ impl FerrumServer {
 mod tests {
 
     use super::*;
-    use async_trait::async_trait;
-    use bytes::BytesMut;
-    use ferrum_stream::{
+    use crate::ferrum_stream::{
         FerrumFrame, FerrumFrameBytes, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
     };
-    use ferrum_tun::FerrumTunFrame;
+    use crate::ferrum_tun::FerrumTunFrame;
+    use async_trait::async_trait;
+    use bytes::BytesMut;
     use std::sync::Mutex;
 
     fn create_client() -> FerrumClient {
@@ -560,16 +553,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -607,16 +600,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -655,16 +648,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -712,16 +705,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -769,16 +762,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -838,16 +831,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -937,16 +930,16 @@ mod tests {
             }
         }
         impl FerrumProto for MockFerrumProto {
-            fn write(self: &mut Self, buf: &[u8]) {
+            fn write(&mut self, buf: &[u8]) {
                 self.real.write(buf);
             }
-            fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+            fn decode_frame(&mut self) -> Result<FerrumFrame> {
                 return self.real.decode_frame();
             }
-            fn encode_frame_str(self: &Self, _val: &str) -> Result<FerrumFrameBytes> {
+            fn encode_frame_str(&self, _val: &str) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_str(_val)
             }
-            fn encode_frame_bytes(self: &Self, _val: &[u8]) -> Result<FerrumFrameBytes> {
+            fn encode_frame_bytes(&self, _val: &[u8]) -> Result<FerrumFrameBytes> {
                 self.real.encode_frame_bytes(_val)
             }
         }
@@ -956,10 +949,10 @@ mod tests {
         }
         #[async_trait]
         impl FerrumTun for MockTun {
-            fn get_name(self: &Self) -> &str {
+            fn get_name(&self) -> &str {
                 "mocktun"
             }
-            async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+            async fn read(&mut self) -> Result<FerrumTunFrame> {
                 if self.sended {
                     tokio::time::sleep(Duration::from_millis(10000000)).await;
                 }
@@ -968,7 +961,7 @@ mod tests {
                 self.sended = true;
                 Ok(FerrumTunFrame { data: by })
             }
-            async fn write(self: &mut Self, _buf: &[u8]) -> Result<()> {
+            async fn write(&mut self, _buf: &[u8]) -> Result<()> {
                 Ok(())
             }
         }

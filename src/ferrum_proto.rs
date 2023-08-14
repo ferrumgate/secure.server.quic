@@ -6,10 +6,10 @@ pub const FERRUM_FRAME_STR_TYPE: u8 = 0x1;
 pub const FERRUM_FRAME_BYTES_TYPE: u8 = 0x2;
 
 pub trait FerrumProto: Send {
-    fn write(self: &mut Self, buf: &[u8]);
-    fn decode_frame(self: &mut Self) -> Result<FerrumFrame>;
-    fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes>;
-    fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes>;
+    fn write(&mut self, buf: &[u8]);
+    fn decode_frame(&mut self) -> Result<FerrumFrame>;
+    fn encode_frame_str(&self, val: &str) -> Result<FerrumFrameBytes>;
+    fn encode_frame_bytes(&self, val: &[u8]) -> Result<FerrumFrameBytes>;
 }
 pub struct FerrumProtoDefault {
     read_data: BytesMut,
@@ -41,11 +41,11 @@ impl FerrumProtoDefault {
 }
 
 impl FerrumProto for FerrumProtoDefault {
-    fn write(self: &mut Self, buf: &[u8]) {
+    fn write(&mut self, buf: &[u8]) {
         self.read_data.extend_from_slice(buf);
     }
 
-    fn decode_frame(self: &mut Self) -> Result<FerrumFrame> {
+    fn decode_frame(&mut self) -> Result<FerrumFrame> {
         if self.read_data_wait_len == 0 {
             if self.read_data.len() < 3 {
                 return Ok(FrameNone);
@@ -83,7 +83,7 @@ impl FerrumProto for FerrumProtoDefault {
         }
     }
 
-    fn encode_frame_str(self: &Self, val: &str) -> Result<FerrumFrameBytes> {
+    fn encode_frame_str(&self, val: &str) -> Result<FerrumFrameBytes> {
         let bytes_len_bytes = u16::try_from(val.len()).ok().unwrap().to_be_bytes();
         let mut d = BytesMut::with_capacity(1 + val.len() + bytes_len_bytes.len());
         d.put_u8(1u8);
@@ -93,7 +93,7 @@ impl FerrumProto for FerrumProtoDefault {
         Ok(FerrumFrameBytes { data: d.to_vec() })
     }
 
-    fn encode_frame_bytes(self: &Self, val: &[u8]) -> Result<FerrumFrameBytes> {
+    fn encode_frame_bytes(&self, val: &[u8]) -> Result<FerrumFrameBytes> {
         let bytes_len_bytes = u16::try_from(val.len()).ok().unwrap().to_be_bytes();
         let mut d = BytesMut::with_capacity(1 + val.len() + bytes_len_bytes.len());
         d.put_u8(FERRUM_FRAME_BYTES_TYPE);

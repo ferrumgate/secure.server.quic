@@ -4,15 +4,12 @@ use anyhow::{anyhow, Result};
 
 use clap::Parser;
 
-use crate::common::get_log_level;
-use client::FerrumClient;
-use client::FerrumClientConfig;
+use ferrum::client::FerrumClient;
+use ferrum::client::FerrumClientConfig;
+use ferrum::common::get_log_level;
 use tokio::{select, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-mod client;
-mod common;
 
 #[derive(Parser, Debug)]
 #[clap(name = "client")]

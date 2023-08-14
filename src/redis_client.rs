@@ -26,7 +26,7 @@ impl RedisClient {
             connection: None,
         }
     }
-    async fn internal_connect(self: &mut Self) -> Result<(redis::Client, redis::aio::Connection)> {
+    async fn internal_connect(&mut self) -> Result<(redis::Client, redis::aio::Connection)> {
         let mut url = format!("redis://{}/", self.host.clone());
         if self.username.is_some() {
             url = format!(
@@ -41,16 +41,16 @@ impl RedisClient {
         let connection = client.get_async_connection().await?;
         Ok((client, connection))
     }
-    async fn get_connection(self: &mut Self) -> Result<redis::aio::Connection> {
+    async fn get_connection(&mut self) -> Result<redis::aio::Connection> {
         Ok(self.client.as_mut().unwrap().get_async_connection().await?)
     }
-    pub async fn connect(self: &mut Self) -> Result<&Self> {
+    pub async fn connect(&mut self) -> Result<&Self> {
         let (client, connection) = self.internal_connect().await?;
         self.client = Some(client);
         self.connection = Some(connection);
         Ok(self)
     }
-    pub async fn subscribe(self: &mut Self, channel: &str, timeout: Duration) -> Result<String> {
+    pub async fn subscribe(&mut self, channel: &str, timeout: Duration) -> Result<String> {
         let (client, mut connection) = self.internal_connect().await?;
         self.client = Some(client);
 
@@ -67,7 +67,7 @@ impl RedisClient {
 
         Ok(pubsub_msg.unwrap().get_payload()?)
     }
-    pub async fn publish(self: &mut Self, channel: &str, message: &str) -> Result<()> {
+    pub async fn publish(&mut self, channel: &str, message: &str) -> Result<()> {
         let mut publish_conn = self.connection.as_mut().unwrap();
 
         publish_conn.publish(channel, message).await?;
@@ -76,7 +76,7 @@ impl RedisClient {
     }
 
     pub async fn execute(
-        self: &mut Self,
+        &mut self,
         tunnel_id: &str,
         client_ip: &str,
         gateway_id: &str,

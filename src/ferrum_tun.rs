@@ -1,8 +1,8 @@
-#[path = "common.rs"]
-mod common;
+//#[path = "common.rs"]
+//mod common;
 
+use crate::common::generate_random_string;
 use anyhow::{anyhow, Ok, Result};
-use common::generate_random_string;
 use futures::{SinkExt, StreamExt};
 
 use bytes::BytesMut;
@@ -15,9 +15,9 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait FerrumTun: Send {
-    fn get_name(self: &Self) -> &str;
-    async fn read(self: &mut Self) -> Result<FerrumTunFrame>;
-    async fn write(self: &mut Self, buf: &[u8]) -> Result<()>;
+    fn get_name(&self) -> &str;
+    async fn read(&mut self) -> Result<FerrumTunFrame>;
+    async fn write(&mut self, buf: &[u8]) -> Result<()>;
 }
 pub struct FerrumTunPosix {
     pub name: String,
@@ -55,11 +55,11 @@ impl FerrumTunPosix {
 #[async_trait]
 impl FerrumTun for FerrumTunPosix {
     #[allow(unused)]
-    fn get_name(self: &Self) -> &str {
+    fn get_name(&self) -> &str {
         self.name.as_str()
     }
     #[allow(unused)]
-    async fn read(self: &mut Self) -> Result<FerrumTunFrame> {
+    async fn read(&mut self) -> Result<FerrumTunFrame> {
         let res = self.stream.next().await;
         match res {
             None => Err(anyhow!("tun data is empty")),
@@ -78,7 +78,7 @@ impl FerrumTun for FerrumTunPosix {
     }
 
     #[allow(unused)]
-    async fn write(self: &mut Self, buf: &[u8]) -> Result<()> {
+    async fn write(&mut self, buf: &[u8]) -> Result<()> {
         self.stream
             .send(TunPacket::new(buf.to_vec()))
             .await
