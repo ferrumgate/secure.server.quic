@@ -3,12 +3,13 @@ use std::{net::ToSocketAddrs, path::PathBuf};
 use anyhow::{anyhow, Result};
 
 use clap::Parser;
-use common::get_log_level;
+
 use server::FerrumServer;
 
 use tokio::select;
 use tokio::signal::{unix::signal, unix::SignalKind};
 
+use common::get_log_level;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -136,35 +137,35 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     let cancel_token = CancellationToken::new();
     let cancel_token_cloned = cancel_token.clone();
     let cancel_token_cloned2 = cancel_token.clone();
-    let _ = select! {
+    select! {
         result=server.listen(cancel_token)=>result,
         signal=signal_ctrlc=>{
             match signal {
-            Ok(()) => {
-                info!("canceling");
-                cancel_token_cloned.cancel();
+                Ok(()) => {
+                    info!("canceling");
+                    cancel_token_cloned.cancel();
 
-            },
-            Err(err) => {
-                error!("Unable to listen for shutdown signal: {}", err);
-                // we also shut down in case of error
+                },
+                Err(err) => {
+                    error!("Unable to listen for shutdown signal: {}", err);
+                    // we also shut down in case of error
+                }
             }
-            }
-            ()
+
         },
         signal= signal_sigint.recv()=>{
             match signal {
-            Some(()) => {
-                info!("canceling");
-                cancel_token_cloned2.cancel();
+                Some(()) => {
+                    info!("canceling");
+                    cancel_token_cloned2.cancel();
 
-            },
-            _ => {
-                error!("Unable to listen for interrupt signal");
-                // we also shut down in case of error
+                },
+                _ => {
+                    error!("Unable to listen for interrupt signal");
+                    // we also shut down in case of error
+                }
             }
-            }
-            ()
+
         }
     };
 

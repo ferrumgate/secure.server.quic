@@ -1,19 +1,18 @@
-mod client;
-mod common;
-
 use std::{net::ToSocketAddrs, path::PathBuf};
 
 use anyhow::{anyhow, Result};
 
 use clap::Parser;
 
-use client::{FerrumClient, FerrumClientConfig};
-
+use client::FerrumClient;
+use client::FerrumClientConfig;
 use common::get_log_level;
-
 use tokio::{select, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+
+mod client;
+mod common;
 
 #[derive(Parser, Debug)]
 #[clap(name = "client")]

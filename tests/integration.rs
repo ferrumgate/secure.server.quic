@@ -1,9 +1,11 @@
 #[cfg(test)]
 mod tests {
 
-    use ferrum::client::{FerrumClient, FerrumClientConfig};
+    use ferrum::client::FerrumClient;
+    use ferrum::client::FerrumClientConfig;
 
-    use ferrum::server::{FerrumServer, FerrumServerConfig};
+    use ferrum::server::FerrumServer;
+    use ferrum::server::FerrumServerConfig;
     use tokio::time::Duration;
     use tokio_util::sync::CancellationToken;
     fn create_client_config(ip: &str) -> FerrumClientConfig {

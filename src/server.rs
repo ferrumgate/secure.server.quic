@@ -15,19 +15,17 @@ use std::{fs, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 
-use common::handle_as_stdin;
+use common::{generate_random_string, handle_as_stdin};
 
 use quinn::{Connection, Endpoint, IdleTimeout, RecvStream, SendStream, VarInt};
-
-use rustls::{Certificate, PrivateKey};
-
-use crate::{common::generate_random_string, server::redis_client::RedisClient};
 
 use ferrum_stream::{
     FerrumProto, FerrumProtoDefault, FerrumReadStream, FerrumStream, FerrumStreamFrame,
     FerrumWriteStream, FrameBytes, FrameNone, FrameStr,
 };
 use ferrum_tun::{FerrumTun, FerrumTunPosix};
+use redis_client::RedisClient;
+use rustls::{Certificate, PrivateKey};
 
 pub use server_config::FerrumServerConfig;
 
@@ -111,8 +109,8 @@ fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertCh
         let key = cert.serialize_private_key_der();
         let cert = cert.serialize_der().unwrap();
         fs::create_dir_all(path).context("failed to create certificate directory")?;
-        fs::write(&cert_path, &cert).context("failed to write certificate")?;
-        fs::write(&key_path, &key).context("failed to write private key")?;
+        fs::write(cert_path, &cert).context("failed to write certificate")?;
+        fs::write(key_path, &key).context("failed to write private key")?;
 
         let key = rustls::PrivateKey(key);
         let cert = rustls::Certificate(cert);
