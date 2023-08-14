@@ -4,46 +4,28 @@
 mod client_config;
 
 use anyhow::{anyhow, Result};
-use bytes::{Bytes, BytesMut};
-use clap::Parser;
+
 use std::{
-    any::Any,
-    borrow::BorrowMut,
-    cell::Cell,
     fs,
-    io::{self, Write},
-    net::{SocketAddr, ToSocketAddrs},
-    ops::{Deref, DerefMut},
-    path::PathBuf,
-    str,
     sync::Arc,
-    sync::Mutex,
     time::{Duration, Instant},
 };
 
-use crate::common::{get_log_level, handle_as_stdin};
-use crate::ferrum_tun::{FerrumTun, FerrumTunFrame, FerrumTunPosix};
+use crate::ferrum_tun::{FerrumTun, FerrumTunPosix};
 pub use client_config::FerrumClientConfig;
-use quinn::{IdleTimeout, RecvStream, SendStream, TransportConfig, VarInt};
+use quinn::{IdleTimeout, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::runtime::Builder;
-use tokio::task::JoinSet;
+use tokio::io::AsyncWriteExt;
+use tokio::select;
 use tokio::time::timeout;
-use tokio::{select, signal};
-use tokio_test::block_on;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn, Level};
-use webpki_roots::TLS_SERVER_ROOTS;
+use tracing::{debug, error, info, warn};
+//use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::ferrum_stream::{
-    FerrumFrame,
     FerrumFrame::{FrameBytes, FrameNone, FrameStr},
-    FerrumFrameBytes, FerrumFrameStr, FerrumProto, FerrumProtoDefault, FerrumReadStream,
-    FerrumStream, FerrumWriteStream, FERRUM_FRAME_BYTES_TYPE, FERRUM_FRAME_STR_TYPE,
+    FerrumProto, FerrumProtoDefault, FerrumReadStream, FerrumStream, FerrumWriteStream,
 };
-
-use async_trait::async_trait;
 
 // Implementation of `ServerCertVerifier` that verifies everything as trustworthy.
 struct SkipServerVerification;
@@ -477,20 +459,21 @@ impl FerrumClient {
     }
 }
 
-fn duration_secs(x: &Duration) -> f32 {
-    x.as_secs() as f32 + x.subsec_nanos() as f32 * 1e-9
-}
-
 #[cfg(test)]
 mod tests {
-
-    use std::{fs::create_dir, net::ToSocketAddrs, rc::Rc};
-
-    use bytes::{Buf, BufMut, Bytes};
-    use clap::Parser;
+    use async_trait::async_trait;
+    use std::{borrow::BorrowMut, fs::create_dir, net::ToSocketAddrs, rc::Rc};
 
     use super::*;
-
+    use crate::ferrum_proto::{
+        FerrumFrame, FerrumFrameBytes, FerrumFrameStr, FERRUM_FRAME_BYTES_TYPE,
+        FERRUM_FRAME_STR_TYPE,
+    };
+    use crate::ferrum_tun::FerrumTunFrame;
+    use bytes::BytesMut;
+    use bytes::{Buf, BufMut, Bytes};
+    use clap::Parser;
+    use std::sync::Mutex;
     struct MockRecvStream {
         buf: Vec<u8>,
         res: Result<Option<usize>, anyhow::Error>,
