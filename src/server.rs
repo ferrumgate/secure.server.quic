@@ -4,6 +4,7 @@ mod redis_client;
 #[path = "server_config.rs"]
 mod server_config;
 
+use std::collections::HashMap;
 use std::{fs, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
@@ -22,6 +23,7 @@ use rustls::{Certificate, PrivateKey};
 
 pub use server_config::FerrumServerConfig;
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -97,7 +99,8 @@ fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertCh
         let key_path = path.join("key.der");
 
         info!("generating self-signed certificate");
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["secure.ferrumgate.com".into()]).unwrap();
 
         let key = cert.serialize_private_key_der();
         let cert = cert.serialize_der().unwrap();
@@ -111,9 +114,59 @@ fn create_certs_chain(options: &FerrumServerConfig) -> Result<FerrumServerCertCh
     };
     Ok(FerrumServerCertChain { certs, key })
 }
+
+type Map = HashMap<String, usize>;
+struct RateLimitCheck {
+    limits: [Map; 2],
+    limits_index: usize,
+    max_try: usize,
+    max_window_ms: u64,
+}
+impl RateLimitCheck {
+    pub fn new(max_try: usize, max_window_ms: u64) -> Self {
+        Self {
+            limits: [HashMap::new(), HashMap::new()],
+            limits_index: usize::MAX,
+            max_try,
+            max_window_ms,
+        }
+    }
+    /**
+     * check if ip limit is ove
+     */
+    pub fn is_limit_over(&mut self, ip: &str, now: Option<u128>) -> bool {
+        let now = now.unwrap_or(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_millis(0))
+                .as_millis(),
+        );
+        let index = usize::try_from((now / u128::from(self.max_window_ms)) % 2).unwrap_or(0);
+        if index != self.limits_index {
+            self.limits[index].clear();
+            self.limits_index = index;
+        }
+        let map = &mut self.limits[index];
+        match map.get(ip) {
+            None => {
+                map.insert(ip.to_string(), 1usize);
+                false
+            }
+            Some(a) => {
+                if *a >= self.max_try {
+                    true
+                } else {
+                    map.insert(ip.to_string(), *a + 1);
+                    false
+                }
+            }
+        }
+    }
+}
 pub struct FerrumServer {
     options: FerrumServerConfig,
     endpoint: Endpoint,
+    ratelimit: RateLimitCheck,
 }
 
 impl FerrumServer {
@@ -144,7 +197,11 @@ impl FerrumServer {
         ))));
 
         let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
-        Ok(FerrumServer { options, endpoint })
+        Ok(FerrumServer {
+            options,
+            endpoint,
+            ratelimit: RateLimitCheck::new(60, 60 * 1000),
+        })
     }
 
     #[allow(unused)]
@@ -152,7 +209,7 @@ impl FerrumServer {
         create_certs_chain(option)
     }
 
-    pub async fn listen(&self, cancel_token: CancellationToken) {
+    pub async fn listen(&mut self, cancel_token: CancellationToken) {
         info!("starting listening on {}", self.options.listen);
         let is_stdin_out = self.options.stdinout;
         let cancel_token = cancel_token.clone();
@@ -161,8 +218,13 @@ impl FerrumServer {
             conn=self.endpoint.accept()=>{conn},
             _=cancel_token.cancelled()=>{None}
         } {
-            //TODO!("check from rate limit list");
             debug!("connection incoming");
+            let client_ip = conn.remote_address().ip().to_string();
+            if self.ratelimit.is_limit_over(client_ip.as_str(), None) {
+                warn!("ratelimit for client ip: {}", client_ip);
+                return;
+            }
+
             let options = self.options.clone();
             let cancel_token = cancel_token.clone();
             tokio::spawn(async move {
@@ -513,6 +575,71 @@ mod tests {
     use async_trait::async_trait;
     use bytes::BytesMut;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn ratelimit() {
+        let mut rate = RateLimitCheck::new(10, 100);
+        let client = "1.1.1.1";
+        let result = rate.is_limit_over(client, None);
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap_or(&0usize);
+        let res2 = rate.limits[1].get(client).unwrap_or(&0usize);
+        assert_eq!(*res1 + *res2, 1);
+        let result = rate.is_limit_over(client, None);
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap_or(&0usize);
+        let res2 = rate.limits[1].get(client).unwrap_or(&0usize);
+        assert_eq!(*res1 + *res2, 2);
+        for i in 2..10 {
+            let result = rate.is_limit_over(client, None);
+            assert_eq!(result, false);
+            let res1 = rate.limits[0].get(client).unwrap_or(&0usize);
+            let res2 = rate.limits[1].get(client).unwrap_or(&0usize);
+            assert_eq!(*res1 + *res2, i + 1);
+        }
+        tokio::time::sleep(Duration::from_millis(102)).await;
+        let mut res = true;
+        for _i in 0..50 {
+            let result = rate.is_limit_over(client, None);
+            res = res & result;
+        }
+        assert_eq!(result, false);
+    }
+
+    #[tokio::test]
+    async fn ratelimit_check_maps() {
+        let mut rate = RateLimitCheck::new(2, 10);
+        let client = "1.1.1.1";
+        let result = rate.is_limit_over(client, Some(0));
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap();
+        assert_eq!(*res1, 1);
+
+        let result = rate.is_limit_over(client, Some(0));
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap();
+        assert_eq!(*res1, 2);
+
+        let result = rate.is_limit_over(client, Some(0));
+        assert_eq!(result, true);
+        let res1 = rate.limits[0].get(client).unwrap();
+        assert_eq!(*res1, 2);
+        //lets change time
+        let result = rate.is_limit_over(client, Some(11));
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap();
+        assert_eq!(*res1, 2); // this map not changed
+        let res1 = rate.limits[1].get(client).unwrap();
+        assert_eq!(*res1, 1); // this map changed
+
+        //lets change time again
+        let result = rate.is_limit_over(client, Some(0));
+        assert_eq!(result, false);
+        let res1 = rate.limits[0].get(client).unwrap();
+        assert_eq!(*res1, 1); //this map cleared
+        let res1 = rate.limits[1].get(client).unwrap();
+        assert_eq!(*res1, 1);
+    }
 
     fn create_client() -> FerrumClient {
         FerrumClient {

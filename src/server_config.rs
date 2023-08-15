@@ -15,4 +15,6 @@ pub struct FerrumServerConfig {
     pub redis_host: String,
     pub redis_user: Option<String>,
     pub redis_pass: Option<String>,
+    pub ratelimit: i32,
+    pub ratelimit_window: i32,
 }

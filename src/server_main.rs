@@ -50,6 +50,10 @@ pub struct ServerOpt {
     pub redis_user: Option<String>,
     #[clap(long = "redis_pass")]
     pub redis_pass: Option<String>,
+    #[clap(long = "ratelimit")]
+    pub ratelimit: Option<i32>,
+    #[clap(long = "ratelimit_window")]
+    pub ratelimit_window: Option<i32>,
 }
 
 #[allow(unused)]
@@ -85,6 +89,8 @@ pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
         redis_host: opt.redis_host,
         redis_pass: opt.redis_pass,
         redis_user: opt.redis_user,
+        ratelimit: opt.ratelimit.unwrap_or(120),
+        ratelimit_window: opt.ratelimit_window.unwrap_or(60000),
     };
     Ok(config)
 }
@@ -132,7 +138,7 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
         .map_err(|e| error!("create certs failed {}", e))
         .unwrap();
 
-    let server = FerrumServer::new(options, cert_chain)?;
+    let mut server = FerrumServer::new(options, cert_chain)?;
     let signal_ctrlc = tokio::signal::ctrl_c();
     let mut signal_sigint = signal(SignalKind::interrupt())?;
     let cancel_token = CancellationToken::new();
@@ -193,6 +199,8 @@ mod tests {
 
             stdinout: false,
             loglevel: "debug".to_string(),
+            ratelimit: None,
+            ratelimit_window: None,
         };
 
         let config_result1 = parse_config(opt);

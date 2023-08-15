@@ -39,6 +39,8 @@ mod tests {
             redis_host: "localhost:6379".to_string(),
             redis_pass: None,
             redis_user: None,
+            ratelimit: 60,
+            ratelimit_window: 60000,
         }
     }
 
@@ -64,7 +66,7 @@ mod tests {
         config_server.connect_timeout = 3000;
 
         let server_crt = FerrumServer::create_server_cert_chain(&config_server).unwrap();
-        let server = FerrumServer::new(config_server, server_crt).unwrap();
+        let mut server = FerrumServer::new(config_server, server_crt).unwrap();
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
@@ -98,7 +100,7 @@ mod tests {
         config_server.connect_timeout = 3000;
 
         let server_crt = FerrumServer::create_server_cert_chain(&config_server).unwrap();
-        let server = FerrumServer::new(config_server, server_crt).unwrap();
+        let mut server = FerrumServer::new(config_server, server_crt).unwrap();
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
