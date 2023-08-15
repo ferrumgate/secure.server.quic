@@ -208,6 +208,11 @@ impl FerrumServer {
     pub fn create_server_cert_chain(option: &FerrumServerConfig) -> Result<FerrumServerCertChain> {
         create_certs_chain(option)
     }
+    async fn kill_connection(conn: quinn::Connecting) -> Result<()> {
+        let _connection = conn.await?;
+        //connection.close(0u32.into(), b"done");
+        Ok(())
+    }
 
     pub async fn listen(&mut self, cancel_token: CancellationToken) {
         info!("starting listening on {}", self.options.listen);
@@ -222,7 +227,11 @@ impl FerrumServer {
             let client_ip = conn.remote_address().ip().to_string();
             if self.ratelimit.is_limit_over(client_ip.as_str(), None) {
                 warn!("ratelimit for client ip: {}", client_ip);
-                return;
+                tokio::spawn(async move {
+                    let _ = FerrumServer::kill_connection(conn).await;
+                });
+
+                continue;
             }
 
             let options = self.options.clone();
