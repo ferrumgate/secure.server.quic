@@ -1,0 +1,60 @@
+[package]
+name = "squic"
+version = "1.0.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[[bin]]
+name = "server"             # The name of the target.
+path = "src/server_main.rs"
+
+
+[[bin]]
+name = "client"             # The name of the target.
+path = "src/client_main.rs"
+
+[lib]
+name = "ferrum" # The name of the target.
+bench = false
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[dependencies]
+anyhow = "1.0.71"
+clap = { version = "4.3.11", features = ["derive"] }
+directories-next = "2.0.0"
+quinn = "0.10.1"
+rcgen = "0.11.1"
+rustls = { version = "0.21.5", features = ["dangerous_configuration"] }
+rustls-pemfile = "1.0.3"
+tokio = { version = "1.29.1", features = ["full"] }
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17" }
+tracing-futures = { version = "0.2.5" }
+url = "2.4.0"
+webpki-roots = "0.25.0"
+tokio-util = { version = "0.6.10", features = ["full"], optional = false }
+tokio-stream = "0.1.14"
+tokio-macros = "2.1.0"
+tokio-test = "0.4.2"
+tun = { version = "0.5.5", features = ["async"] }
+redis = { version = "0.23.1", features = [
+    "connection-manager",
+    "tokio-comp",
+    "r2d2",
+
+] }
+rand = "0.8.5"
+futures-core = "0.3.28"
+futures = "0.3.28"
+bytes = "1.4.0"
+async-trait = "0.1.72"
+
+[dev-dependencies]
