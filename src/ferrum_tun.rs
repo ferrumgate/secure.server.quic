@@ -2,10 +2,10 @@
 //mod common;
 
 use crate::common::generate_random_string;
-use anyhow::{anyhow, Ok, Result};
-use futures::{SinkExt, StreamExt};
-
+use anyhow::{anyhow, Result};
 use bytes::BytesMut;
+use futures::{SinkExt, StreamExt};
+use std::result::Result::Ok;
 use tokio_util::codec::Framed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -95,12 +95,13 @@ use futures::AsyncWriteExt;
 #[cfg(any(target_os = "windows"))]
 use tunio::traits::{DriverT, InterfaceT};
 #[cfg(any(target_os = "windows"))]
-use tunio::{DefaultDriver, DefaultInterface};
+use tunio::{DefaultAsyncInterface, DefaultDriver};
 
 #[cfg(any(target_os = "windows"))]
 pub struct FerrumTunWin32 {
+    read_buf: Vec<u8>,
     name: String,
-    tun: DefaultInterface,
+    tun: DefaultAsyncInterface,
 }
 
 #[cfg(any(target_os = "windows"))]
@@ -112,18 +113,24 @@ impl FerrumTunWin32 {
         let mut driver = DefaultDriver::new().map_err(|err| anyhow!(err.to_string()))?;
         let devname = format!("ferrum{}", generate_random_string(8));
         // Preparing configuration for new interface. We use `Builder` pattern for this.
-        let interface_config = DefaultInterface::new(driver, params);
+        let mut interface_config = DefaultAsyncInterface::config_builder();
         interface_config.name(devname.to_string());
-        interface_config.platform(|mut b| b.description("ferrumgate".into()).build())?;
+        let mut interface_config = interface_config
+            .platform(|mut b| b.description("ferrumgate".into()).build())
+            .map_err(|err| anyhow!(err.to_string()))?;
 
-        let interface_config = interface_config.build()?;
+        let mut interface_config = interface_config
+            .build()
+            .map_err(|err| anyhow!(err.to_string()))?;
 
-        let mut interface: DefaultTokioInterface =
-            DefaultTokioInterface::new_up(&mut driver, interface_config)?;
+        let interface: DefaultAsyncInterface =
+            DefaultAsyncInterface::new_up(&mut driver, interface_config)
+                .map_err(|err| anyhow!(err.to_string()))?;
 
         Ok(FerrumTunWin32 {
-            name: "test".to_string(),
+            name: devname.to_string(),
             tun: interface,
+            read_buf: vec![0; capacity],
         })
     }
 }
@@ -137,12 +144,26 @@ impl FerrumTun for FerrumTunWin32 {
     }
     #[allow(unused)]
     async fn read(&mut self) -> Result<FerrumTunFrame> {
-        Err(anyhow!("not implemented yer"))
+        let res = self.tun.read(&mut self.read_buf).await;
+        match res {
+            Err(e) => Err(anyhow!(e.to_string())),
+            Ok(0) => Err(anyhow!("empty data from tun")),
+            Ok(len) => {
+                let mut d = BytesMut::with_capacity(len);
+                d.extend_from_slice(&self.read_buf[0..len]);
+                Ok(FerrumTunFrame { data: d })
+            }
+        }
     }
 
     #[allow(unused)]
     async fn write(&mut self, buf: &[u8]) -> Result<()> {
-        Err(anyhow!("not implemented yet"))
+        let _ = self
+            .tun
+            .write(buf)
+            .await
+            .map_err(|err| anyhow!(err.to_string()))?;
+        Ok(())
     }
 }
 #[cfg(target_os = "linux")]
@@ -232,4 +253,28 @@ mod tests {
 #[cfg(target_os = "windows")]
 #[allow(unused)]
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use std::env::*;
+    use std::time::Duration;
+    #[tokio::test]
+    async fn test_tun_windows() {
+        {
+            eprintln!(
+                "current working dir {}",
+                std::env::current_dir().unwrap().to_str().unwrap()
+            );
+            let tun_result = FerrumTunWin32::new(4096);
+            if let Err(e) = tun_result {
+                eprintln!("create tun failed :{}", e);
+                assert_eq!(false, true);
+                return;
+            }
+            assert_eq!(tun_result.is_ok(), true);
+            let tun = tun_result.unwrap();
+            tokio::time::sleep(Duration::from_millis(10000)).await;
+        }
+        eprintln!("tun droped");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+}

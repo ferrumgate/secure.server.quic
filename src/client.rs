@@ -129,8 +129,11 @@ impl FerrumClient {
             .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
 
         client_config.transport_config(Arc::new(transport_config));
-
-        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap())?;
+        let mut bind_addr = "0.0.0.0:0";
+        if self.options.ip.is_ipv6() {
+            bind_addr = "0.0.0.0:0";
+        }
+        let mut endpoint = quinn::Endpoint::client(bind_addr.parse().unwrap())?;
         endpoint.set_default_client_config(client_config);
 
         let start = Instant::now();
@@ -148,6 +151,7 @@ impl FerrumClient {
         let protocol = FerrumProtoDefault::new(1600);
 
         if self.options.rebind {
+            info!("rebinding socket again");
             let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
             let addr = socket.local_addr().unwrap();
             error!("rebinding to {addr}");

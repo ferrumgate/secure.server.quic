@@ -60,6 +60,6 @@ async-trait = "0.1.73"
 [target.'cfg(any(unix, macos))']
 tun = { version = "0.5.5", features = ["async"] }
 [target.'cfg(windows)'.dependencies]
-tunio = { path = "../tunio", features = ["async-tokio"] }
+tunio = { path = "../tunio", features = ["tokio"] }
 
 [dev-dependencies]
