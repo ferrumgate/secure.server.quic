@@ -109,7 +109,7 @@ impl FerrumProto for FerrumProtoDefault {
 mod tests {
     use super::*;
 
-    use std::os::unix::fs::MetadataExt;
+    //use std::os::unix::fs::MetadataExt;
     use std::time::Duration;
     #[test]
     fn decode_none() {

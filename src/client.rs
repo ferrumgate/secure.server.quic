@@ -11,7 +11,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::ferrum_tun::{FerrumTun, FerrumTunPosix};
+
+#[cfg(any(target_os = "windows"))]
+use crate::ferrum_tun::{FerrumTun, FerrumTunWin32};
+
 pub use client_config::FerrumClientConfig;
 use quinn::{IdleTimeout, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
@@ -249,11 +254,18 @@ impl FerrumClient {
         //test b2
         Ok(frame.data)
     }
+
     fn create_tun_device(&mut self) -> Result<()> {
         if self.tun.is_some() {
             return Ok(());
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let tun = FerrumTunPosix::new(4096).map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        #[cfg(any(target_os = "windows"))]
+        let tun = FerrumTunWin32::new(4096).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;

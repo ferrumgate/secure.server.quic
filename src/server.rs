@@ -17,7 +17,12 @@ use crate::ferrum_stream::{
     FerrumProto, FerrumProtoDefault, FerrumReadStream, FerrumStream, FerrumStreamFrame,
     FerrumWriteStream, FrameBytes, FrameNone, FrameStr,
 };
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::ferrum_tun::{FerrumTun, FerrumTunPosix};
+
+#[cfg(any(target_os = "windows"))]
+use crate::ferrum_tun::{FerrumTun, FerrumTunWin32};
 use redis_client::RedisClient;
 use rustls::{Certificate, PrivateKey};
 
@@ -305,7 +310,13 @@ impl FerrumServer {
         if client.tun.is_some() {
             return Ok(());
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let tun = FerrumTunPosix::new(4096).map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        #[cfg(any(target_os = "windows"))]
+        let tun = FerrumTunWin32::new(4096).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;

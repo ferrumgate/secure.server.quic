@@ -8,6 +8,7 @@ use futures::{SinkExt, StreamExt};
 use bytes::BytesMut;
 use tokio_util::codec::Framed;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::{TunPacket, TunPacketCodec};
 
 // we need this for testing
@@ -19,17 +20,19 @@ pub trait FerrumTun: Send {
     async fn read(&mut self) -> Result<FerrumTunFrame>;
     async fn write(&mut self, buf: &[u8]) -> Result<()>;
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct FerrumTunPosix {
     pub name: String,
     stream: Framed<tun::AsyncDevice, TunPacketCodec>,
     pub frame_bytes: BytesMut,
     pub frame_wait_len: usize,
 }
+
 pub struct FerrumTunFrame {
     pub data: BytesMut,
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl FerrumTunPosix {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn new(capacity: usize) -> Result<Self>
     where
         Self: Sized,
@@ -53,6 +56,7 @@ impl FerrumTunPosix {
 }
 
 #[async_trait]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl FerrumTun for FerrumTunPosix {
     #[allow(unused)]
     fn get_name(&self) -> &str {
@@ -86,6 +90,61 @@ impl FerrumTun for FerrumTunPosix {
     }
 }
 
+use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
+#[cfg(any(target_os = "windows"))]
+use tunio::traits::{DriverT, InterfaceT};
+#[cfg(any(target_os = "windows"))]
+use tunio::{DefaultDriver, DefaultInterface};
+
+#[cfg(any(target_os = "windows"))]
+pub struct FerrumTunWin32 {
+    name: String,
+    tun: DefaultInterface,
+}
+
+#[cfg(any(target_os = "windows"))]
+impl FerrumTunWin32 {
+    pub fn new(capacity: usize) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut driver = DefaultDriver::new().map_err(|err| anyhow!(err.to_string()))?;
+        let devname = format!("ferrum{}", generate_random_string(8));
+        // Preparing configuration for new interface. We use `Builder` pattern for this.
+        let interface_config = DefaultInterface::new(driver, params);
+        interface_config.name(devname.to_string());
+        interface_config.platform(|mut b| b.description("ferrumgate".into()).build())?;
+
+        let interface_config = interface_config.build()?;
+
+        let mut interface: DefaultTokioInterface =
+            DefaultTokioInterface::new_up(&mut driver, interface_config)?;
+
+        Ok(FerrumTunWin32 {
+            name: "test".to_string(),
+            tun: interface,
+        })
+    }
+}
+
+#[async_trait]
+#[cfg(any(target_os = "windows"))]
+impl FerrumTun for FerrumTunWin32 {
+    #[allow(unused)]
+    fn get_name(&self) -> &str {
+        self.name.as_str()
+    }
+    #[allow(unused)]
+    async fn read(&mut self) -> Result<FerrumTunFrame> {
+        Err(anyhow!("not implemented yer"))
+    }
+
+    #[allow(unused)]
+    async fn write(&mut self, buf: &[u8]) -> Result<()> {
+        Err(anyhow!("not implemented yet"))
+    }
+}
 #[cfg(target_os = "linux")]
 #[allow(unused)]
 #[cfg(test)]
@@ -169,3 +228,8 @@ mod tests {
         assert_eq!(b, 0u8);
     }
 }
+
+#[cfg(target_os = "windows")]
+#[allow(unused)]
+#[cfg(test)]
+mod tests {}
