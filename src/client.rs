@@ -122,9 +122,9 @@ impl FerrumClient {
 
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
-        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
-            self.options.idle_timeout,
-        ))));
+        transport_config.max_idle_timeout(Some(
+            IdleTimeout::try_from(Duration::from_millis(self.options.idle_timeout)).unwrap(),
+        ));
         transport_config
             .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
 

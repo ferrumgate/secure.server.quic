@@ -197,9 +197,9 @@ impl FerrumServer {
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
         transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
-        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
-            options.idle_timeout,
-        ))));
+        transport_config.max_idle_timeout(Some(
+            IdleTimeout::try_from(Duration::from_millis(options.idle_timeout)).unwrap(),
+        ));
 
         let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
         Ok(FerrumServer {
