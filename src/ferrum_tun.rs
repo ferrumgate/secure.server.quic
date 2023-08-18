@@ -1,7 +1,7 @@
 //#[path = "common.rs"]
 //mod common;
 
-use crate::common::generate_random_string;
+use crate::common::{generate_random_string,generate_random_number};
 use anyhow::{anyhow, Result};
 use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
@@ -46,14 +46,20 @@ impl FerrumTunPosix {
         Self: Sized,
     {
         let mut config = tun::Configuration::default();
+        #[cfg(any(target_os = "linux"))]
         config.platform(|config| {
             config.packet_information(false);
         });
+        
+        let mut devname = format!("ferrum{}", generate_random_string(8));
+        if cfg!(any(target_os = "macos")){
+        devname = format!("utun{}", generate_random_number(100,30000));
+        }
+        
+        config.name(devname.as_str());
         config.up();
-        let devname = format!("ferrum{}", generate_random_string(8));
-        config.name(devname.clone());
         let dev = tun::create_as_async(&config)?;
-
+        
         Ok(FerrumTunPosix {
             frame_bytes: BytesMut::with_capacity(capacity),
             frame_wait_len: 0,

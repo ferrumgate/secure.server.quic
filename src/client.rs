@@ -129,10 +129,15 @@ impl FerrumClient {
             .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
 
         client_config.transport_config(Arc::new(transport_config));
-        let mut bind_addr = "0.0.0.0:0";
-        if self.options.ip.is_ipv6() {
+        let mut bind_addr = "[::]:0";
+        if cfg!(target_os = "windows") {
             bind_addr = "0.0.0.0:0";
-        }
+            if self.options.ip.is_ipv6() {
+                bind_addr = "[::]:0";
+            }
+        } 
+      
+        
         let mut endpoint = quinn::Endpoint::client(bind_addr.parse().unwrap())?;
         endpoint.set_default_client_config(client_config);
 

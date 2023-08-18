@@ -101,6 +101,11 @@ pub fn generate_random_string(len: usize) -> String {
         .collect();
     rand_string
 }
+#[allow(dead_code)]
+pub fn generate_random_number(min: i32, max: i32) -> i32 {
+    let x: f64 = thread_rng().gen();
+    (x * (max - min) as f64 + min as f64).round() as i32
+}
 
 #[allow(dead_code)]
 pub async fn handle_as_stdin(
