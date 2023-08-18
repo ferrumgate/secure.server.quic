@@ -58,8 +58,12 @@ futures = "0.3.28"
 bytes = "1.4.0"
 async-trait = "0.1.73"
 [target.'cfg(any(target_os="linux", target_os="macos"))'.dependencies]
-tun = { version = "0.5.5", features = ["async"] }
+tun = { git = "https://github.com/hamzakilic/rust-tun.git", branch = "ferrum", features = [
+    "async",
+] }
 [target.'cfg(any(target_os="windows"))'.dependencies]
-tunio = { path = "../tunio", features = ["tokio"] }
+tunio = { git = "https://github.com/hamzakilic/tunio.git", branch = "ferrum", features = [
+    "tokio",
+] }
 
 [dev-dependencies]
