@@ -96,7 +96,7 @@ pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
     Ok(config)
 }
 
-#[cfg(any(target_os = "unix"))]
+#[cfg(any(target_os = "linux"))]
 #[allow(dead_code)]
 
 fn main() {
@@ -134,10 +134,10 @@ fn main() {
     });
 }
 
-#[cfg(not(target_os = "unix"))]
+#[cfg(not(target_os = "linux"))]
 fn main() {}
 
-#[cfg(any(target_os = "unix"))]
+#[cfg(any(target_os = "linux"))]
 #[allow(dead_code)]
 async fn run(options: FerrumServerConfig) -> Result<()> {
     let cert_chain = FerrumServer::create_server_cert_chain(&options)
@@ -185,7 +185,7 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "unix"))]
+#[cfg(any(target_os = "linux"))]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -57,9 +57,9 @@ futures-core = "0.3.28"
 futures = "0.3.28"
 bytes = "1.4.0"
 async-trait = "0.1.73"
-[target.'cfg(any(unix, macos))']
+[target.'cfg(any(target_os="linux", target_os="macos"))'.dependencies]
 tun = { version = "0.5.5", features = ["async"] }
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(target_os="windows"))'.dependencies]
 tunio = { path = "../tunio", features = ["tokio"] }
 
 [dev-dependencies]
