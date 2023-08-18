@@ -284,6 +284,11 @@ impl FerrumServer {
                                 let _ =
                                     FerrumServer::handle_client(&mut client, cancel_token, 5000)
                                         .await;
+                                warn!(
+                                    "closing connection {} {}",
+                                    client.client_ip,
+                                    client.tun.as_mut().unwrap().as_mut().get_name()
+                                );
                                 client.close();
                             }
                         }
@@ -517,6 +522,7 @@ impl FerrumServer {
                                                     FrameNone=> {//no frame detected, follow stream
                                                         //test h12
                                                         //last_error=Some(anyhow!("no frame"));
+                                                        debug!("no frame detected");
                                                         break_main_loop=false;
                                                         break;
                                                     },

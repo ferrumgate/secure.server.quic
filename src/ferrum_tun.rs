@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use std::result::Result::Ok;
 use tokio_util::codec::Framed;
+use tracing::{debug, error, info, warn};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::{TunPacket, TunPacketCodec};
@@ -28,6 +29,13 @@ pub struct FerrumTunPosix {
     pub frame_wait_len: usize,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Drop for FerrumTunPosix {
+    fn drop(&mut self) {
+        warn!("droping tun {}", self.get_name());
+    }
+}
+
 pub struct FerrumTunFrame {
     pub data: BytesMut,
 }
@@ -41,7 +49,7 @@ impl FerrumTunPosix {
         config.platform(|config| {
             config.packet_information(false);
         });
-        //config.up();
+        config.up();
         let devname = format!("ferrum{}", generate_random_string(8));
         config.name(devname.clone());
         let dev = tun::create_as_async(&config)?;
