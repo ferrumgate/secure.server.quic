@@ -413,7 +413,7 @@ impl FerrumServer {
                 .write_ext(frame.data.as_mut())
                 .await?;
 
-            /* let _res = redis
+            let _res = redis
                 .subscribe(
                     format!("/tunnel/authentication/{}", tunnel).as_str(),
                     Duration::from_millis(60000),
@@ -423,7 +423,7 @@ impl FerrumServer {
                 //test r3
                 error!("could not authenticate {}", client.client_ip);
                 return Err(anyhow!("could not authenticate {}", client.client_ip));
-            } */
+            }
         }
         debug!("authentication completed for {}", client.client_ip);
         FerrumServer::create_tun_device(client)?;

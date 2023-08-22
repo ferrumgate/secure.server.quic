@@ -135,9 +135,8 @@ impl FerrumClient {
             if self.options.ip.is_ipv6() {
                 bind_addr = "[::]:0";
             }
-        } 
-      
-        
+        }
+
         let mut endpoint = quinn::Endpoint::client(bind_addr.parse().unwrap())?;
         endpoint.set_default_client_config(client_config);
 

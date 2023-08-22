@@ -52,8 +52,11 @@ impl FerrumTunPosix {
         });
 
         let mut devname = format!("ferrum{}", generate_random_string(8));
+        let mut device_name = devname.clone();
         if cfg!(any(target_os = "macos")) {
-            devname = format!("utun{}", generate_random_number(100, 30000));
+            let random = generate_random_number(100, 30000);
+            devname = format!("utun{}", random);
+            device_name = format!("utun{}", random - 1);
         }
 
         config.name(devname.as_str());
@@ -63,7 +66,7 @@ impl FerrumTunPosix {
         Ok(FerrumTunPosix {
             frame_bytes: BytesMut::with_capacity(capacity),
             frame_wait_len: 0,
-            name: devname,
+            name: device_name,
             stream: dev.into_framed(),
         })
     }
