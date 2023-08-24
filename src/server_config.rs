@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{fmt::Display, net::SocketAddr, path::PathBuf};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FerrumServerConfig {
     pub listen: SocketAddr,
     pub ip: String,

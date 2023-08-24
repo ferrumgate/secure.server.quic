@@ -28,7 +28,7 @@ impl RedisClient {
     }
     async fn internal_connect(&mut self) -> Result<(redis::Client, redis::aio::Connection)> {
         let mut url = format!("redis://{}/", self.host.clone());
-        if self.username.is_some() {
+        if self.username.is_some() && self.password.is_some() {
             url = format!(
                 "redis://{}:{}@{}/",
                 self.username.as_ref().unwrap().clone(),
@@ -104,6 +104,27 @@ impl RedisClient {
                 .cmd("pexpire")
                 .arg(format!("/tunnel/id/{}", tunnel_id))
                 .arg(timeout.to_string())
+                .ignore()
+                .query_async::<_, i32>(connection),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn execute_tun(
+        &mut self,
+        tunnel_id: &str,
+        tun: &str,
+        execute_timeout: u64,
+    ) -> Result<()> {
+        let mut connection = self.connection.as_mut().unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_millis(execute_timeout),
+            redis::pipe()
+                .atomic()
+                .cmd("hset")
+                .arg(format!("/tunnel/id/{}", tunnel_id))
+                .arg("tun")
+                .arg(tun)
                 .ignore()
                 .query_async::<_, i32>(connection),
         )

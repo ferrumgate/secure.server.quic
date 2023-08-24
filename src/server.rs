@@ -284,11 +284,7 @@ impl FerrumServer {
                                 let _ =
                                     FerrumServer::handle_client(&mut client, cancel_token, 5000)
                                         .await;
-                                warn!(
-                                    "closing connection {} {}",
-                                    client.client_ip,
-                                    client.tun.as_mut().unwrap().as_mut().get_name()
-                                );
+                                warn!("closing connection {}", client.client_ip);
                                 client.close();
                             }
                         }
@@ -428,6 +424,7 @@ impl FerrumServer {
         }
         debug!("authentication completed for {}", client.client_ip);
         FerrumServer::create_tun_device(client)?;
+
         //this block is important for destroy redis connection
         {
             let mut redis = RedisClient::new(
@@ -440,14 +437,9 @@ impl FerrumServer {
                 error!("connecting to redis failed {}", err);
                 err
             })?;
+            let tun_name = client.tun.as_ref().unwrap().get_name();
             redis
-                .execute(
-                    tunnel.as_str(),
-                    client.client_ip.as_str(),
-                    client.gateway_id.as_str(),
-                    300000_u32,
-                    60000_u64,
-                )
+                .execute_tun(tunnel.as_str(), tun_name, 60000_u64)
                 .await?;
         }
         let mut frame = client

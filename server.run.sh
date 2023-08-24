@@ -41,11 +41,13 @@ if [ ! -z "$REDIS_HOST" ]; then
     OPT_REDIS_HOST=$REDIS_HOST
 fi
 echo "redis host $OPT_REDIS_HOST"
-ARGS="$ARGS --redis_host $OPT_REDIS_HOST"
+export REDIS_HOST=$OPT_REDIS_HOST
+#ARGS="$ARGS --redis_host $OPT_REDIS_HOST"
 
 if [ ! -z "$REDIS_PASS" ]; then
-    ARGS="$ARGS --redis_user default --redis_pass $REDIS_PASS"
-    echo "redis pass ******"
+    ##ARGS="$ARGS --redis_user default --redis_pass $REDIS_PASS"
+    ##echo "redis pass ******"
+    export REDIS_PASS=$REDIS_PASS
 fi
 
 if [ ! -z "$GATEWAY_ID" ]; then

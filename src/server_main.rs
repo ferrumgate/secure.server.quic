@@ -45,11 +45,15 @@ pub struct ServerOpt {
     pub loglevel: String,
     #[clap(long = "gateway_id", default_value = "gateway_id")]
     pub gateway_id: String,
-    #[clap(long = "redis_host", default_value = "localhost:6379")]
+    #[clap(
+        long = "redis_host",
+        default_value = "localhost:6379",
+        env = "REDIS_HOST"
+    )]
     pub redis_host: String,
-    #[clap(long = "redis_user")]
+    #[clap(long = "redis_user", default_value = "default")]
     pub redis_user: Option<String>,
-    #[clap(long = "redis_pass")]
+    #[clap(long = "redis_pass", env = "REDIS_PASS")]
     pub redis_pass: Option<String>,
     #[clap(long = "ratelimit")]
     pub ratelimit: Option<i32>,
@@ -120,10 +124,11 @@ fn main() {
         error!("ERROR: parse failed: {}", e);
         ::std::process::exit(1);
     }
+    let options = opt.unwrap();
 
     _rt.block_on(async {
         let code = {
-            if let Err(e) = run(opt.unwrap()).await {
+            if let Err(e) = run(options).await {
                 error!("ERROR: {e}");
                 1
             } else {
