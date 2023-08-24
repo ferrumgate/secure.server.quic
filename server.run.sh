@@ -1,7 +1,7 @@
 #!/bin/bash
 ulimit -c unlimited
 
-echo "starting server"
+echo "starting server quic"
 
 echo "***************ip address**************"
 ip a
@@ -22,12 +22,12 @@ if [ ! -z "$TLS_KEY" ]; then
     ARGS="$ARGS --key /ferrum/server.key.pem "
 fi
 
-OPT_LISTEN=[::]:8443
-if [ ! -z "$LISTEN" ]; then
-    OPT_LISTEN=$LISTEN
+OPT_PORT=8443
+if [ ! -z "$PORT" ]; then
+    OPT_PORT=$PORT
 fi
-echo "listening on  $OPT_LISTEN"
-ARGS="$ARGS --listen $OPT_LISTEN "
+echo "listening on port $OPT_PORT"
+ARGS="$ARGS --listen [::]:$OPT_PORT "
 
 OPT_LOG_LEVEL="info"
 if [ ! -z "$LOG_LEVEL" ]; then
@@ -43,13 +43,8 @@ fi
 echo "redis host $OPT_REDIS_HOST"
 ARGS="$ARGS --redis_host $OPT_REDIS_HOST"
 
-if [ ! -z "$REDIS_USER" ]; then
-    ARGS="$ARGS --redis_user $REDIS_USER"
-    echo "redis user $REDIS_USER"
-fi
-
 if [ ! -z "$REDIS_PASS" ]; then
-    ARGS="$ARGS --redis_pass $REDIS_PASS"
+    ARGS="$ARGS --redis_user default --redis_pass $REDIS_PASS"
     echo "redis pass ******"
 fi
 

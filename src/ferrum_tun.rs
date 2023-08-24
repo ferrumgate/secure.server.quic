@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
 use std::result::Result::Ok;
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, warn};
+use tracing::warn;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::{TunPacket, TunPacketCodec};
@@ -107,8 +107,8 @@ impl FerrumTun for FerrumTunPosix {
     }
 }
 
-use futures::AsyncReadExt;
-use futures::AsyncWriteExt;
+//use futures::AsyncReadExt;
+//use futures::AsyncWriteExt;
 #[cfg(any(target_os = "windows"))]
 use tunio::traits::{DriverT, InterfaceT};
 #[cfg(any(target_os = "windows"))]

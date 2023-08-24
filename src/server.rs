@@ -326,7 +326,7 @@ impl FerrumServer {
             e
         })?;
         client.tun = Some(Box::new(tun));
-        eprintln!(
+        info!(
             "ferrum_tunnel_opened: {}",
             client.tun.as_ref().unwrap().get_name()
         );
@@ -377,7 +377,8 @@ impl FerrumServer {
 
         //let _stdin = tokio::io::stdin();
         let ctoken1 = cancel_token.clone();
-
+        let tunnel = generate_random_string(63);
+        info!("open tunnel: {}", tunnel);
         //this block is important for droping
         {
             let mut redis = RedisClient::new(
@@ -390,7 +391,6 @@ impl FerrumServer {
                 error!("connecting to redis failed {}", err);
                 err
             })?;
-            let tunnel = generate_random_string(63);
 
             redis
                 .execute(
@@ -398,6 +398,7 @@ impl FerrumServer {
                     client.client_ip.as_str(),
                     client.gateway_id.as_str(),
                     300000,
+                    60000_u64,
                 )
                 .await?;
             let mut frame = client
@@ -427,7 +428,28 @@ impl FerrumServer {
         }
         debug!("authentication completed for {}", client.client_ip);
         FerrumServer::create_tun_device(client)?;
-
+        //this block is important for destroy redis connection
+        {
+            let mut redis = RedisClient::new(
+                client.redis_host.as_str(),
+                client.redis_user.clone(),
+                client.redis_pass.clone(),
+            );
+            let _ = redis.connect().await.map_err(|err| {
+                //test r1
+                error!("connecting to redis failed {}", err);
+                err
+            })?;
+            redis
+                .execute(
+                    tunnel.as_str(),
+                    client.client_ip.as_str(),
+                    client.gateway_id.as_str(),
+                    300000_u32,
+                    60000_u64,
+                )
+                .await?;
+        }
         let mut frame = client
             .proto
             .as_ref()
