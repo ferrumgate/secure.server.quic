@@ -17,6 +17,7 @@ docker build --progress=plain -f ./dockerfile -t $IMAGE_NAME .
 echo "$IMAGE_NAME:$version builded"
 docker tag $IMAGE_NAME registry.ferrumgate.zero/ferrumgate/$IMAGE_NAME:$version
 docker tag $IMAGE_NAME registry.ferrumgate.zero/ferrumgate/$IMAGE_NAME:latest
+docker tag $IMAGE_NAME ferrumgate/$IMAGE_NAME:$version
 
 while true; do
     read -p "do you want to push to local registry y/n " yn
