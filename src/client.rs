@@ -11,7 +11,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::ferrum_tun::{FerrumTun, FerrumTunPosix};
+
+#[cfg(any(target_os = "windows"))]
+use crate::ferrum_tun::{FerrumTun, FerrumTunWin32};
+
 pub use client_config::FerrumClientConfig;
 use quinn::{IdleTimeout, TransportConfig, VarInt};
 use rustls::{OwnedTrustAnchor, RootCertStore};
@@ -117,15 +122,22 @@ impl FerrumClient {
 
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
-        transport_config.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
-            self.options.idle_timeout,
-        ))));
+        transport_config.max_idle_timeout(Some(
+            IdleTimeout::try_from(Duration::from_millis(self.options.idle_timeout)).unwrap(),
+        ));
         transport_config
             .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
 
         client_config.transport_config(Arc::new(transport_config));
+        let mut bind_addr = "[::]:0";
+        if cfg!(target_os = "windows") {
+            bind_addr = "0.0.0.0:0";
+            if self.options.ip.is_ipv6() {
+                bind_addr = "[::]:0";
+            }
+        }
 
-        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap())?;
+        let mut endpoint = quinn::Endpoint::client(bind_addr.parse().unwrap())?;
         endpoint.set_default_client_config(client_config);
 
         let start = Instant::now();
@@ -143,6 +155,7 @@ impl FerrumClient {
         let protocol = FerrumProtoDefault::new(1600);
 
         if self.options.rebind {
+            info!("rebinding socket again");
             let socket = std::net::UdpSocket::bind("[::]:0").unwrap();
             let addr = socket.local_addr().unwrap();
             error!("rebinding to {addr}");
@@ -249,11 +262,18 @@ impl FerrumClient {
         //test b2
         Ok(frame.data)
     }
+
     fn create_tun_device(&mut self) -> Result<()> {
         if self.tun.is_some() {
             return Ok(());
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let tun = FerrumTunPosix::new(4096).map_err(|e| {
+            error!("tun create failed: {}", e);
+            e
+        })?;
+        #[cfg(any(target_os = "windows"))]
+        let tun = FerrumTunWin32::new(4096).map_err(|e| {
             error!("tun create failed: {}", e);
             e
         })?;

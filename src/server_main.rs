@@ -7,6 +7,7 @@ use clap::Parser;
 use ferrum::server::FerrumServer;
 
 use tokio::select;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::signal::{unix::signal, unix::SignalKind};
 
 use ferrum::common::get_log_level;
@@ -44,11 +45,15 @@ pub struct ServerOpt {
     pub loglevel: String,
     #[clap(long = "gateway_id", default_value = "gateway_id")]
     pub gateway_id: String,
-    #[clap(long = "redis_host", default_value = "localhost:6379")]
+    #[clap(
+        long = "redis_host",
+        default_value = "localhost:6379",
+        env = "REDIS_HOST"
+    )]
     pub redis_host: String,
-    #[clap(long = "redis_user")]
+    #[clap(long = "redis_user", default_value = "default")]
     pub redis_user: Option<String>,
-    #[clap(long = "redis_pass")]
+    #[clap(long = "redis_pass", env = "REDIS_PASS")]
     pub redis_pass: Option<String>,
     #[clap(long = "ratelimit")]
     pub ratelimit: Option<i32>,
@@ -95,6 +100,7 @@ pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
     Ok(config)
 }
 
+#[cfg(any(target_os = "linux"))]
 #[allow(dead_code)]
 
 fn main() {
@@ -118,10 +124,11 @@ fn main() {
         error!("ERROR: parse failed: {}", e);
         ::std::process::exit(1);
     }
+    let options = opt.unwrap();
 
     _rt.block_on(async {
         let code = {
-            if let Err(e) = run(opt.unwrap()).await {
+            if let Err(e) = run(options).await {
                 error!("ERROR: {e}");
                 1
             } else {
@@ -132,6 +139,10 @@ fn main() {
     });
 }
 
+#[cfg(not(target_os = "linux"))]
+fn main() {}
+
+#[cfg(any(target_os = "linux"))]
 #[allow(dead_code)]
 async fn run(options: FerrumServerConfig) -> Result<()> {
     let cert_chain = FerrumServer::create_server_cert_chain(&options)
@@ -179,6 +190,7 @@ async fn run(options: FerrumServerConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux"))]
 #[cfg(test)]
 mod tests {
     use super::*;

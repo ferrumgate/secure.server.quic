@@ -28,7 +28,7 @@ impl RedisClient {
     }
     async fn internal_connect(&mut self) -> Result<(redis::Client, redis::aio::Connection)> {
         let mut url = format!("redis://{}/", self.host.clone());
-        if self.username.is_some() {
+        if self.username.is_some() && self.password.is_some() {
             url = format!(
                 "redis://{}:{}@{}/",
                 self.username.as_ref().unwrap().clone(),
@@ -81,29 +81,54 @@ impl RedisClient {
         client_ip: &str,
         gateway_id: &str,
         timeout: u32,
+        execute_timeout: u64,
     ) -> Result<()> {
         //int32_t result= redis_execute(pamh,redis,"hset /tunnel/id/%s clientIp %s id %s gatewayId %s type %s",tunnel_id,client_ip,tunnel_id,gateway_id,"ssh");
         // result = redis_execute(pamh, redis, "pexpire /tunnel/id/%s 300000", tunnel_id);
         let mut connection = self.connection.as_mut().unwrap();
-        redis::pipe()
-            .atomic()
-            .cmd("hset")
-            .arg(format!("/tunnel/id/{}", tunnel_id))
-            .arg("clientIp")
-            .arg(client_ip)
-            .arg("id")
-            .arg(tunnel_id)
-            .arg("gatewayId")
-            .arg(gateway_id)
-            .arg("type")
-            .arg("quic")
-            .ignore()
-            .cmd("pexpire")
-            .arg(format!("/tunnel/id/{}", tunnel_id))
-            .arg(timeout.to_string())
-            .ignore()
-            .query_async(connection)
-            .await?;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(execute_timeout),
+            redis::pipe()
+                .atomic()
+                .cmd("hset")
+                .arg(format!("/tunnel/id/{}", tunnel_id))
+                .arg("clientIp")
+                .arg(client_ip)
+                .arg("id")
+                .arg(tunnel_id)
+                .arg("gatewayId")
+                .arg(gateway_id)
+                .arg("type")
+                .arg("quic")
+                .ignore()
+                .cmd("pexpire")
+                .arg(format!("/tunnel/id/{}", tunnel_id))
+                .arg(timeout.to_string())
+                .ignore()
+                .query_async::<_, i32>(connection),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn execute_tun(
+        &mut self,
+        tunnel_id: &str,
+        tun: &str,
+        execute_timeout: u64,
+    ) -> Result<()> {
+        let mut connection = self.connection.as_mut().unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_millis(execute_timeout),
+            redis::pipe()
+                .atomic()
+                .cmd("hset")
+                .arg(format!("/tunnel/id/{}", tunnel_id))
+                .arg("tun")
+                .arg(tun)
+                .ignore()
+                .query_async::<_, i32>(connection),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -285,7 +310,7 @@ mod tests {
         assert_eq!(res.is_err(), false);
 
         let res = redis2
-            .execute("tunnelid", "clientip", "gatewayid", 10000)
+            .execute("tunnelid", "clientip", "gatewayid", 10000, 1000)
             .await;
         assert_eq!(res.is_err(), false);
     }

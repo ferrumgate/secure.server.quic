@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{fmt::Display, net::SocketAddr, path::PathBuf};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FerrumServerConfig {
     pub listen: SocketAddr,
     pub ip: String,
@@ -10,7 +10,7 @@ pub struct FerrumServerConfig {
     pub key: Option<PathBuf>,
     pub cert: Option<PathBuf>,
     pub connect_timeout: u64,
-    pub idle_timeout: u32,
+    pub idle_timeout: u64,
     pub gateway_id: String,
     pub redis_host: String,
     pub redis_user: Option<String>,

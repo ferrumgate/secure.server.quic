@@ -15,6 +15,7 @@ path = "src/server_main.rs"
 name = "client"             # The name of the target.
 path = "src/client_main.rs"
 
+
 [lib]
 name = "ferrum" # The name of the target.
 bench = false
@@ -28,7 +29,7 @@ lto = true
 
 [dependencies]
 anyhow = "1.0.71"
-clap = { version = "4.3.11", features = ["derive"] }
+clap = { version = "4.3.11", features = ["derive", "env"] }
 directories-next = "2.0.0"
 quinn = "0.10.1"
 rcgen = "0.11.1"
@@ -44,8 +45,8 @@ tokio-util = { version = "0.6.10", features = ["full"], optional = false }
 tokio-stream = "0.1.14"
 tokio-macros = "2.1.0"
 tokio-test = "0.4.2"
-tun = { version = "0.5.5", features = ["async"] }
-redis = { version = "0.23.1", features = [
+
+redis = { version = "0.23.2", features = [
     "connection-manager",
     "tokio-comp",
     "r2d2",
@@ -55,6 +56,14 @@ rand = "0.8.5"
 futures-core = "0.3.28"
 futures = "0.3.28"
 bytes = "1.4.0"
-async-trait = "0.1.72"
+async-trait = "0.1.73"
+[target.'cfg(any(target_os="linux", target_os="macos"))'.dependencies]
+tun = { git = "https://github.com/hamzakilic/rust-tun.git", branch = "ferrum", features = [
+    "async",
+] }
+[target.'cfg(any(target_os="windows"))'.dependencies]
+tunio = { git = "https://github.com/hamzakilic/tunio.git", branch = "ferrum", features = [
+    "tokio",
+] }
 
 [dev-dependencies]

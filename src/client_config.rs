@@ -10,6 +10,6 @@ pub struct FerrumClientConfig {
     pub insecure: bool,
     pub stdinout: bool,
     pub loglevel: String,
-    pub idle_timeout: u32,
+    pub idle_timeout: u64,
     pub connect_timeout: u64,
 }
