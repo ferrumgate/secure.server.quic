@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct FerrumServerConfig {
@@ -17,4 +17,5 @@ pub struct FerrumServerConfig {
     pub redis_pass: Option<String>,
     pub ratelimit: i32,
     pub ratelimit_window: i32,
+    pub auth_timeout: u64,
 }

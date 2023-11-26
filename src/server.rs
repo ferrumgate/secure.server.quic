@@ -196,7 +196,7 @@ impl FerrumServer {
         let transport_config = transport_config_option.unwrap();
         transport_config.max_concurrent_uni_streams(0_u8.into());
         transport_config.max_concurrent_bidi_streams(1_u8.into());
-        transport_config.keep_alive_interval(Some(Duration::from_secs(7)));
+        transport_config.keep_alive_interval(Some(Duration::from_millis(options.idle_timeout / 5)));
         transport_config.max_idle_timeout(Some(
             IdleTimeout::try_from(Duration::from_millis(options.idle_timeout)).unwrap(),
         ));
@@ -281,9 +281,13 @@ impl FerrumServer {
                                 client.write_stream = Some(Box::new(send));
                                 client.connection = Some(conn);
 
-                                let _ =
-                                    FerrumServer::handle_client(&mut client, cancel_token, 5000)
-                                        .await;
+                                let _ = FerrumServer::handle_client(
+                                    &mut client,
+                                    cancel_token,
+                                    options.connect_timeout,
+                                    options.auth_timeout,
+                                )
+                                .await;
                                 warn!("closing connection {}", client.client_ip);
                                 client.close();
                             }
@@ -334,6 +338,7 @@ impl FerrumServer {
         client: &mut FerrumClient,
         cancel_token: CancellationToken,
         timeout_ms: u64,
+        auth_timeout_ms: u64,
     ) -> Result<()> {
         let hello_msg = timeout(
             Duration::from_millis(timeout_ms),
@@ -413,7 +418,7 @@ impl FerrumServer {
             let _res = redis
                 .subscribe(
                     format!("/tunnel/authentication/{}", tunnel).as_str(),
-                    Duration::from_millis(60000),
+                    Duration::from_millis(auth_timeout_ms),
                 )
                 .await?;
             if _res != "ok:" {
@@ -738,7 +743,7 @@ mod tests {
         let cancel_token = CancellationToken::new();
         client.read_stream = Some(Box::new(MockRecvStream {}));
         client.proto = Some(Box::new(MockFerrumProto::new(2048)));
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("deadline"), true);
@@ -785,7 +790,7 @@ mod tests {
         let cancel_token = CancellationToken::new();
         client.read_stream = Some(Box::new(MockRecvStream {}));
         client.proto = Some(Box::new(MockFerrumProto::new(2048)));
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("stream read error"), true);
@@ -842,7 +847,7 @@ mod tests {
         client.proto.as_mut().unwrap().write(&5u16.to_be_bytes());
         client.proto.as_mut().unwrap().write(b"ferrum_open:");
 
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("protocol error"), true);
@@ -899,7 +904,7 @@ mod tests {
         client.proto.as_mut().unwrap().write(&8u16.to_be_bytes());
         client.proto.as_mut().unwrap().write(b"heelll0o");
 
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("protocol error"), true);
@@ -957,7 +962,7 @@ mod tests {
         client.proto.as_mut().unwrap().write(&5u16.to_be_bytes());
         client.proto.as_mut().unwrap().write(b"hello");
 
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
         assert_eq!(err_msg.starts_with("Connection refused"), true);
@@ -1049,7 +1054,7 @@ mod tests {
                 });
         });
 
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         let _ = tokio::join!(task);
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();
@@ -1174,7 +1179,7 @@ mod tests {
                 });
         });
 
-        let result = FerrumServer::handle_client(&mut client, cancel_token, 50).await;
+        let result = FerrumServer::handle_client(&mut client, cancel_token, 50, 120000).await;
         let _ = tokio::join!(task);
         assert_eq!(result.is_err(), true);
         let err_msg = result.unwrap_err().to_string();

@@ -35,6 +35,14 @@ pub struct ClientConfigOpt {
     pub stdinout: bool,
     #[clap(long = "loglevel", default_value = "info")]
     pub loglevel: String,
+    #[clap(
+        long = "connect-timeout",
+        default_value = "5000",
+        env = "CONNECT_TIMEOUT"
+    )]
+    pub connect_timeout: u64,
+    #[clap(long = "idle-timeout", default_value = "60000", env = "IDLE_TIMEOUT")]
+    pub idle_timeout: u64,
 }
 #[allow(unused)]
 pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
@@ -56,8 +64,8 @@ pub fn parse_config(opt: ClientConfigOpt) -> Result<FerrumClientConfig> {
         insecure: opt.insecure,
         stdinout: opt.stdinout,
         loglevel: opt.loglevel.clone(),
-        connect_timeout: 3000,
-        idle_timeout: 15000,
+        connect_timeout: opt.connect_timeout,
+        idle_timeout: opt.idle_timeout,
     };
 
     Ok(config)
@@ -157,6 +165,8 @@ mod tests {
             insecure: true,
             stdinout: false,
             loglevel: "debug".to_string(),
+            connect_timeout: 10000,
+            idle_timeout: 30000,
         };
 
         let config_result1 = parse_config(opt);

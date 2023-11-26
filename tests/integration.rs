@@ -41,6 +41,7 @@ mod tests {
             redis_user: None,
             ratelimit: 60,
             ratelimit_window: 60000,
+            auth_timeout: 120000,
         }
     }
 

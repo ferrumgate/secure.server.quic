@@ -58,7 +58,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
 fn create_root_certs(config: &FerrumClientConfig) -> Result<RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
 
-    roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+    roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -126,7 +126,7 @@ impl FerrumClient {
             IdleTimeout::try_from(Duration::from_millis(self.options.idle_timeout)).unwrap(),
         ));
         transport_config
-            .keep_alive_interval(Some(Duration::from_millis(self.options.connect_timeout)));
+            .keep_alive_interval(Some(Duration::from_millis(self.options.idle_timeout / 5)));
 
         client_config.transport_config(Arc::new(transport_config));
         let mut bind_addr = "[::]:0";
@@ -530,8 +530,8 @@ mod tests {
             insecure: false,
             stdinout: false,
             loglevel: "debug".to_string(),
-            idle_timeout: 15000,
-            connect_timeout: 3000,
+            idle_timeout: 60000,
+            connect_timeout: 5000,
         }
     }
 
@@ -547,8 +547,8 @@ mod tests {
             insecure: false,
             stdinout: false,
             loglevel: "debug".to_string(),
-            idle_timeout: 15000,
-            connect_timeout: 3000,
+            idle_timeout: 60000,
+            connect_timeout: 5000,
         };
         let roots = create_root_certs(&config);
         assert_eq!(roots.is_ok(), true);

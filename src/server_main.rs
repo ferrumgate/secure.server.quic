@@ -59,6 +59,18 @@ pub struct ServerOpt {
     pub ratelimit: Option<i32>,
     #[clap(long = "ratelimit_window")]
     pub ratelimit_window: Option<i32>,
+
+    #[clap(
+        long = "connect-timeout",
+        default_value = "5000",
+        env = "CONNECT_TIMEOUT"
+    )]
+    pub connect_timeout: u64,
+    #[clap(long = "idle-timeout", default_value = "60000", env = "IDLE_TIMEOUT")]
+    pub idle_timeout: u64,
+
+    #[clap(long = "auth-timeout", default_value = "120000", env = "AUTH_TIMEOUT")]
+    pub auth_timeout: u64,
 }
 
 #[allow(unused)]
@@ -88,8 +100,9 @@ pub fn parse_config(opt: ServerOpt) -> Result<FerrumServerConfig> {
         cert: opt.cert,
         key: opt.key,
         keylog: opt.keylog,
-        connect_timeout: 3000,
-        idle_timeout: 15000,
+        connect_timeout: opt.connect_timeout,
+        idle_timeout: opt.idle_timeout,
+        auth_timeout: opt.auth_timeout,
         gateway_id: opt.gateway_id,
         redis_host: opt.redis_host,
         redis_pass: opt.redis_pass,
@@ -213,6 +226,9 @@ mod tests {
             loglevel: "debug".to_string(),
             ratelimit: None,
             ratelimit_window: None,
+            auth_timeout: 10000,
+            connect_timeout: 10000,
+            idle_timeout: 600000,
         };
 
         let config_result1 = parse_config(opt);
