@@ -66,7 +66,7 @@ pub struct ServerOpt {
         env = "CONNECT_TIMEOUT"
     )]
     pub connect_timeout: u64,
-    #[clap(long = "idle-timeout", default_value = "60000", env = "IDLE_TIMEOUT")]
+    #[clap(long = "idle-timeout", default_value = "45000", env = "IDLE_TIMEOUT")]
     pub idle_timeout: u64,
 
     #[clap(long = "auth-timeout", default_value = "120000", env = "AUTH_TIMEOUT")]

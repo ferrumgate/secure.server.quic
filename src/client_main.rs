@@ -41,7 +41,7 @@ pub struct ClientConfigOpt {
         env = "CONNECT_TIMEOUT"
     )]
     pub connect_timeout: u64,
-    #[clap(long = "idle-timeout", default_value = "60000", env = "IDLE_TIMEOUT")]
+    #[clap(long = "idle-timeout", default_value = "45000", env = "IDLE_TIMEOUT")]
     pub idle_timeout: u64,
 }
 #[allow(unused)]
