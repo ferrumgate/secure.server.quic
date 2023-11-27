@@ -110,6 +110,10 @@ impl FerrumTun for FerrumTunPosix {
 //use futures::AsyncReadExt;
 //use futures::AsyncWriteExt;
 #[cfg(any(target_os = "windows"))]
+use futures::AsyncReadExt;
+#[cfg(any(target_os = "windows"))]
+use futures::AsyncWriteExt;
+#[cfg(any(target_os = "windows"))]
 use tunio::traits::{DriverT, InterfaceT};
 #[cfg(any(target_os = "windows"))]
 use tunio::{DefaultAsyncInterface, DefaultDriver};
